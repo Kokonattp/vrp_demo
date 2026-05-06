@@ -15,7 +15,7 @@ import {
   X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -274,6 +274,7 @@ export default function Home() {
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
   const [scenarioName, setScenarioName] = useState("morning-wave");
   const [showGuide, setShowGuide] = useState(false);
+  const autoOptimizedRef = useRef(false);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const totalDemand = useMemo(
@@ -324,7 +325,7 @@ export default function Home() {
     );
   }, []);
 
-  const runOptimization = async () => {
+  const runOptimization = useCallback(async (options?: { keepPanel?: boolean }) => {
     if (!depot) return;
     setIsRunning(true);
     setOptimizerState((current) => (current === "ready" ? current : "warming"));
@@ -354,9 +355,17 @@ export default function Home() {
       setComparison((current) => [fallback, ...current.filter((item) => item.scenarioId !== fallback.scenarioId)].slice(0, 4));
     } finally {
       setIsRunning(false);
-      setActivePanel("run");
+      if (!options?.keepPanel) {
+        setActivePanel("run");
+      }
     }
-  };
+  }, [depot, locations, orders, scenarioName, vehicles]);
+
+  useEffect(() => {
+    if (optimizerState !== "ready" || autoOptimizedRef.current || isRunning) return;
+    autoOptimizedRef.current = true;
+    void runOptimization({ keepPanel: true });
+  }, [isRunning, optimizerState, runOptimization]);
 
   const addVehicle = () => {
     if (!depot) return;
@@ -585,7 +594,7 @@ export default function Home() {
                     <ScenarioStat icon={Boxes} label="CBM" value={`${totalDemand.cbm.toFixed(1)} / ${totalCapacity.cbm.toFixed(1)}`} />
                     <ScenarioStat icon={Clock3} label="เวลาบริการ" value={`${orders.reduce((sum, order) => sum + order.serviceMinutes, 0)} นาที`} />
                   </div>
-                  <Button className="w-full" onClick={runOptimization} disabled={isRunning}>
+                  <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
                     <Play className="h-4 w-4" />
                     {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังคำนวณ") : "คำนวณเส้นทาง"}
                   </Button>
@@ -665,7 +674,7 @@ export default function Home() {
                       />
                     ))}
                   </div>
-                  <Button className="w-full" onClick={runOptimization} disabled={isRunning}>
+                  <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
                     <Play className="h-4 w-4" />
                     {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังจัดเส้นทาง") : "จัดเส้นทาง"}
                   </Button>
@@ -747,10 +756,10 @@ export default function Home() {
             <div>
               <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
               <p className="text-sm text-muted-foreground">
-                {result.totalDistanceKm.toFixed(1)} กม., {result.totalDurationMinutes} นาที
+                {isRunning ? "กำลังคำนวณเส้นถนนจริง..." : `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที`}
               </p>
             </div>
-            <Badge variant={result.status === "optimized" ? "success" : "warning"}>{statusLabel(result.status)}</Badge>
+            <Badge variant={result.status === "optimized" ? "success" : "warning"}>{isRunning ? "กำลังคำนวณ" : statusLabel(result.status)}</Badge>
           </div>
           <div className="space-y-3">
             {result.routes.map((route) => {
