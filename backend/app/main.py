@@ -117,6 +117,11 @@ def health():
     return {"status": "ok", "routingApi": bool(OSRM_BASE_URL), "ortools": pywrapcp is not None}
 
 
+@app.get("/kaitheathcheck")
+def leapcell_healthcheck():
+    return {"status": "ok"}
+
+
 @app.post("/api/optimize", response_model=ScenarioResult)
 async def optimize(request: OptimizeRequest):
     if not request.locations or not request.vehicles or not request.orders:
