@@ -112,6 +112,11 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def root():
+    return {"name": "VRP Simulation Studio API", "status": "ok"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "routingApi": bool(OSRM_BASE_URL), "ortools": pywrapcp is not None}
@@ -119,6 +124,11 @@ def health():
 
 @app.get("/kaitheathcheck")
 def leapcell_healthcheck():
+    return {"status": "ok"}
+
+
+@app.get("/kaithealthcheck")
+def leapcell_healthcheck_alt():
     return {"status": "ok"}
 
 
