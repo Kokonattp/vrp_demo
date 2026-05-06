@@ -29,7 +29,7 @@ import type { Coordinate, LocationPoint, OptimizeRequest, Order, RoutePlan, Rout
 
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const API_URL = "";
 
 const panels = [
   { id: "planning", label: "Planning", icon: MapPinned },

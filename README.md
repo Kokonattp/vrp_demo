@@ -47,7 +47,11 @@ Create a GitHub repo and import it in Vercel with:
 - Root Directory: `frontend`
 - Build Command: `npm run build`
 - Output: Next.js default
-- Environment Variable: `NEXT_PUBLIC_API_URL=https://your-backend-url`
+- Environment Variables for private Hugging Face Space backend:
+  - `HF_API_URL=https://your-space.hf.space`
+  - `HF_TOKEN=hf_your_token`
+
+The browser calls Vercel API routes under `/api/*`; Vercel forwards requests to the private backend with `HF_TOKEN`, so the token is not exposed to the browser.
 
 ### Render Backend
 
