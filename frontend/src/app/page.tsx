@@ -6,6 +6,7 @@ import {
   ArrowRightLeft,
   BarChart3,
   Boxes,
+  CircleHelp,
   Clock3,
   FileUp,
   MapPinned,
@@ -13,7 +14,8 @@ import {
   Plus,
   Route,
   Truck,
-  Upload
+  Upload,
+  X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
@@ -73,6 +75,38 @@ function minutesToTime(value: number) {
     .padStart(2, "0");
   const minutes = (normalized % 60).toString().padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+
+type DisplayRouteStop = RouteStop & {
+  deliveryCount: number;
+  orderIds: string[];
+};
+
+function compactRouteStops(stops: RouteStop[]): DisplayRouteStop[] {
+  return stops.reduce<DisplayRouteStop[]>((compact, stop) => {
+    const previous = compact[compact.length - 1];
+    const isDepot = stop.locationId === stops[0]?.locationId && !stop.orderId;
+    const canMerge =
+      previous &&
+      !isDepot &&
+      previous.locationId === stop.locationId &&
+      (previous.orderIds.length > 0 || Boolean(stop.orderId));
+
+    if (canMerge) {
+      previous.deliveryCount += stop.orderId ? 1 : 0;
+      if (stop.orderId) previous.orderIds.push(stop.orderId);
+      previous.serviceMinutes += stop.serviceMinutes;
+      previous.warnings = [...previous.warnings, ...stop.warnings];
+      return compact;
+    }
+
+    compact.push({
+      ...stop,
+      deliveryCount: stop.orderId ? 1 : 0,
+      orderIds: stop.orderId ? [stop.orderId] : []
+    });
+    return compact;
+  }, []);
 }
 
 function distanceKm(a: Coordinate, b: Coordinate) {
@@ -246,6 +280,7 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
   const [scenarioName, setScenarioName] = useState("morning-wave");
+  const [showGuide, setShowGuide] = useState(true);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const totalDemand = useMemo(
@@ -448,6 +483,49 @@ export default function Home() {
 
   return (
     <main className="h-screen overflow-hidden bg-[linear-gradient(180deg,#f7fafc_0%,#eef4f7_100%)]">
+      {showGuide && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-lg border bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
+            <div className="flex items-start justify-between gap-4 border-b p-5">
+              <div>
+                <Badge variant="success">คู่มือเร็ว</Badge>
+                <h2 className="mt-3 text-xl font-semibold">VRP Simulation Studio ทำงานยังไง?</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  ใช้แผนที่และพิกัดจริง แต่รถ ออเดอร์ น้ำหนัก CBM และข้อจำกัดเป็นข้อมูลจำลองสำหรับลองวางแผน
+                </p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowGuide(false)} aria-label="ปิดคู่มือ">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-3 p-5">
+              {[
+                ["1", "ใส่พิกัดจริง", "นำเข้า CSV หรือกรอกพิกัดสาขา/คลังด้วย lat, lng จริง"],
+                ["2", "สร้างข้อมูลจำลอง", "กำหนดรถ ความจุ ออเดอร์ น้ำหนัก CBM เวลาเข้ารับ/ส่ง และ service time"],
+                ["3", "กดคำนวณ VRP", "ระบบส่งข้อมูลไป backend OR-Tools เพื่อแบ่งงานให้รถและจัดลำดับจุดส่ง"]
+              ].map(([number, title, detail]) => (
+                <div key={number} className="flex gap-3 rounded-lg border bg-slate-50 p-3">
+                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
+                    {number}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">{title}</p>
+                    <p className="text-xs leading-relaxed text-muted-foreground">{detail}</p>
+                  </div>
+                </div>
+              ))}
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                ถ้าสาขาเดียวมีหลายออเดอร์ ระบบจะแสดงเป็นจุดเดียวพร้อมจำนวนออเดอร์ เช่น “Silom Store · 4 ออเดอร์”
+                เพื่อไม่ให้ดูเหมือนรถวนที่เดิมหลายรอบ
+              </div>
+            </div>
+            <div className="flex justify-end border-t p-5">
+              <Button onClick={() => setShowGuide(false)}>เริ่มใช้งาน</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="flex h-[78px] flex-col gap-3 border-b bg-white/95 px-5 py-3 shadow-[0_8px_30px_rgba(15,23,42,0.06)] lg:flex-row lg:items-center lg:justify-between lg:px-6">
         <div>
           <div className="flex items-center gap-3">
@@ -460,11 +538,17 @@ export default function Home() {
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-4 gap-2">
-          <Metric label="ตัวคำนวณ" value={statusLabel(optimizerState)} />
-          <Metric label="สาขา" value={locations.filter((location) => location.type === "store").length.toString()} />
-          <Metric label="รถ" value={vehicles.length.toString()} />
-          <Metric label="น้ำหนัก" value={`${Math.round(totalDemand.kg)} กก.`} />
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setShowGuide(true)}>
+            <CircleHelp className="h-4 w-4" />
+            วิธีใช้
+          </Button>
+          <div className="grid grid-cols-4 gap-2">
+            <Metric label="ตัวคำนวณ" value={statusLabel(optimizerState)} />
+            <Metric label="สาขา" value={locations.filter((location) => location.type === "store").length.toString()} />
+            <Metric label="รถ" value={vehicles.length.toString()} />
+            <Metric label="น้ำหนัก" value={`${Math.round(totalDemand.kg)} กก.`} />
+          </div>
         </div>
       </header>
 
@@ -692,7 +776,11 @@ export default function Home() {
             <Badge variant={result.status === "optimized" ? "success" : "warning"}>{statusLabel(result.status)}</Badge>
           </div>
           <div className="space-y-3">
-            {result.routes.map((route) => (
+            {result.routes.map((route) => {
+              const displayStops = compactRouteStops(route.stops);
+              const deliveryStops = displayStops.filter((stop) => stop.orderIds.length > 0);
+              const orderCount = route.stops.filter((stop) => stop.orderId).length;
+              return (
               <Card key={route.vehicleId} className="overflow-hidden border-slate-200">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -700,7 +788,9 @@ export default function Home() {
                       <span className="h-3 w-3 rounded-full" style={{ backgroundColor: route.color }} />
                       {route.vehicleName}
                     </CardTitle>
-                    <span className="text-xs text-muted-foreground">{route.stops.length - 2} จุดส่ง</span>
+                    <span className="text-xs text-muted-foreground">
+                      {deliveryStops.length} จุดส่ง · {orderCount} ออเดอร์
+                    </span>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-2">
@@ -710,17 +800,25 @@ export default function Home() {
                     <RouteMetric label="น้ำหนัก" value={`${Math.round(route.loadKg)} กก.`} />
                   </div>
                   <div className="space-y-1">
-                    {route.stops.map((stop, index) => (
+                    {displayStops.map((stop, index) => (
                       <div key={`${route.vehicleId}-${stop.locationId}-${index}`} className="flex items-center gap-2 text-xs">
                         <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-secondary text-[10px]">{index + 1}</span>
-                        <span className="min-w-0 flex-1 truncate">{stop.name}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {stop.name}
+                          {stop.deliveryCount > 1 && (
+                            <Badge variant="muted" className="ml-2 align-middle">
+                              {stop.deliveryCount} ออเดอร์
+                            </Badge>
+                          )}
+                        </span>
                         <span className="text-muted-foreground">{minutesToTime(stop.arrivalMinutes)}</span>
                       </div>
                     ))}
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
           </div>
         </aside>
       </div>
