@@ -9,7 +9,7 @@ const osmStyle: maplibregl.StyleSpecification = {
   sources: {
     osm: {
       type: "raster",
-      tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+      tiles: ["https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
       tileSize: 256,
       attribution: "OpenStreetMap contributors, CARTO"
     }
@@ -18,7 +18,11 @@ const osmStyle: maplibregl.StyleSpecification = {
     {
       id: "osm",
       type: "raster",
-      source: "osm"
+      source: "osm",
+      paint: {
+        "raster-saturation": -0.18,
+        "raster-contrast": -0.08
+      }
     }
   ]
 };

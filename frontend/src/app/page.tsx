@@ -468,16 +468,40 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[372px_minmax(0,1fr)_404px]">
-        <aside className="overflow-y-auto border-b bg-white/70 p-4 backdrop-blur lg:border-b-0 lg:border-r">
+      <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_396px]">
+        <aside className="overflow-y-auto border-b bg-white/85 p-4 backdrop-blur lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
-            <TabsList className="grid w-full grid-cols-4 gap-1 border bg-white p-1 shadow-sm lg:grid-cols-2">
+            <div className="mb-4 rounded-lg border bg-white p-3 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold">เริ่มใช้งานเร็ว</p>
+                  <p className="text-xs text-muted-foreground">ทำตาม 3 ขั้นตอนนี้ก่อน แล้วค่อยปรับละเอียด</p>
+                </div>
+                <Badge variant="muted">ทดลอง</Badge>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {["พิกัดจริง", "รถ + ออเดอร์", "คำนวณ"].map((step, index) => (
+                  <div key={step} className="rounded-md bg-secondary px-2.5 py-2">
+                    <div className="mb-1 grid h-5 w-5 place-items-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+                      {index + 1}
+                    </div>
+                    <p className="text-xs font-medium leading-snug">{step}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <TabsList className="grid w-full grid-cols-1 gap-1.5 border bg-white p-1.5 shadow-sm">
               {panels.map((panel) => {
                 const Icon = panel.icon;
+                const stepNumber = panels.findIndex((item) => item.id === panel.id) + 1;
                 return (
-                  <TabsTrigger key={panel.id} value={panel.id} className="justify-start gap-2">
-                    <Icon className="h-3.5 w-3.5" />
-                    <span>{panel.label}</span>
+                  <TabsTrigger key={panel.id} value={panel.id} className="h-10 justify-start gap-3 px-3 text-sm">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-secondary text-[11px] font-semibold text-muted-foreground">
+                      {stepNumber}
+                    </span>
+                    <Icon className="h-4 w-4" />
+                    <span className="truncate">{panel.label}</span>
                   </TabsTrigger>
                 );
               })}
@@ -645,11 +669,19 @@ export default function Home() {
           </Tabs>
         </aside>
 
-        <section className="min-h-0 overflow-hidden">
+        <section className="relative min-h-0 overflow-hidden">
+          <div className="pointer-events-none absolute left-4 top-4 z-10 max-w-[320px] rounded-lg border bg-white/92 p-3 shadow-[0_18px_42px_rgba(15,23,42,0.14)] backdrop-blur">
+            <div className="mb-1 flex items-center gap-2">
+              <Badge variant="success">แผนที่จริง</Badge>
+              <span className="text-xs font-medium text-muted-foreground">CARTO Voyager</span>
+            </div>
+            <p className="text-sm font-semibold">ลากหมุดบนแผนที่เพื่อปรับพิกัดสาขา</p>
+            <p className="text-xs text-muted-foreground">เส้นสีคือแผนรถแต่ละคัน ส่วนข้อมูลรถและออเดอร์เป็นข้อมูลจำลอง</p>
+          </div>
           <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
 
-        <aside className="overflow-y-auto border-t bg-white/70 p-4 backdrop-blur lg:border-l lg:border-t-0">
+        <aside className="overflow-y-auto border-t bg-white/85 p-4 backdrop-blur lg:border-l lg:border-t-0">
           <div className="mb-4 flex items-center justify-between rounded-lg border bg-white p-3 shadow-sm">
             <div>
               <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
