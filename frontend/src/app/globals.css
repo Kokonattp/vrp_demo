@@ -6,23 +6,23 @@
 
 @layer base {
   :root {
-    --background: 210 24% 97%;
-    --foreground: 215 28% 17%;
+    --background: 210 25% 96%;
+    --foreground: 218 34% 14%;
     --card: 0 0% 100%;
-    --card-foreground: 215 28% 17%;
-    --primary: 189 93% 28%;
+    --card-foreground: 218 34% 14%;
+    --primary: 187 86% 29%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 216 18% 92%;
-    --secondary-foreground: 215 28% 17%;
-    --muted: 214 19% 93%;
-    --muted-foreground: 215 13% 43%;
-    --accent: 32 94% 56%;
+    --secondary: 214 24% 93%;
+    --secondary-foreground: 218 34% 14%;
+    --muted: 216 22% 94%;
+    --muted-foreground: 218 13% 43%;
+    --accent: 37 92% 52%;
     --accent-foreground: 24 20% 14%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 20% 85%;
-    --input: 214 20% 85%;
-    --ring: 189 93% 28%;
+    --border: 214 24% 86%;
+    --input: 214 24% 86%;
+    --ring: 187 86% 29%;
   }
 
   * {
@@ -43,4 +43,9 @@
 
 .maplibregl-marker {
   cursor: grab;
+}
+
+.maplibregl-ctrl-group {
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
 }

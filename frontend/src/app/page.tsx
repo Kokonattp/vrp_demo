@@ -427,20 +427,20 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-background">
-      <header className="flex flex-col gap-4 border-b bg-card px-4 py-4 lg:flex-row lg:items-center lg:justify-between lg:px-6">
+    <main className="h-screen overflow-hidden bg-background">
+      <header className="flex h-[76px] flex-col gap-3 border-b bg-white/95 px-5 py-3 shadow-[0_8px_30px_rgba(15,23,42,0.06)] lg:flex-row lg:items-center lg:justify-between lg:px-6">
         <div>
           <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-lg bg-primary text-primary-foreground">
+            <div className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-primary-foreground shadow-[0_12px_26px_rgba(15,118,128,0.22)]">
               <Route className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-xl font-semibold tracking-normal">VRP Simulation Studio</h1>
-              <p className="text-sm text-muted-foreground">Real maps, real coordinates, simulated logistics scenarios.</p>
+              <h1 className="text-lg font-semibold tracking-normal">VRP Simulation Studio</h1>
+              <p className="text-xs text-muted-foreground">Real maps, real coordinates, simulated logistics scenarios.</p>
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-4 gap-2">
           <Metric label="Optimizer" value={optimizerState} />
           <Metric label="Stores" value={locations.filter((location) => location.type === "store").length.toString()} />
           <Metric label="Vehicles" value={vehicles.length.toString()} />
@@ -448,10 +448,10 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="grid min-h-[calc(100vh-89px)] grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)_380px]">
-        <aside className="border-b bg-card p-4 lg:border-b-0 lg:border-r">
+      <div className="grid h-[calc(100vh-76px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_390px]">
+        <aside className="overflow-y-auto border-b bg-slate-50/95 p-4 lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
-            <TabsList className="grid w-full grid-cols-4 gap-1 lg:grid-cols-2">
+            <TabsList className="grid w-full grid-cols-4 gap-1 border bg-white p-1 shadow-sm lg:grid-cols-2">
               {panels.map((panel) => {
                 const Icon = panel.icon;
                 return (
@@ -464,7 +464,7 @@ export default function Home() {
             </TabsList>
 
             <TabsContent value="planning" className="mt-4 space-y-4">
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Planning Workspace</CardTitle>
                   <CardDescription>{scenarioName}</CardDescription>
@@ -484,7 +484,7 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Locations</CardTitle>
                 </CardHeader>
@@ -494,7 +494,7 @@ export default function Home() {
                       key={location.id}
                       type="button"
                       onClick={() => setSelectedLocationId(location.id)}
-                      className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-secondary"
+                      className="flex w-full items-center justify-between rounded-md border bg-white px-3 py-2 text-left text-sm transition-colors hover:bg-secondary"
                     >
                       <span className="truncate">{location.name}</span>
                       <Badge variant={location.type === "depot" ? "default" : "muted"}>{location.type}</Badge>
@@ -505,7 +505,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="upload" className="mt-4 space-y-4">
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Upload Locations</CardTitle>
                   <CardDescription>id, name, lat, lng, address</CardDescription>
@@ -537,7 +537,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="run" className="mt-4 space-y-4">
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Run VRP</CardTitle>
                   <CardDescription>{orders.length} simulated delivery orders</CardDescription>
@@ -566,7 +566,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="adjust" className="mt-4 space-y-4">
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Drag Route Adjustment</CardTitle>
                   <CardDescription>{result.routes.length} active routes</CardDescription>
@@ -580,7 +580,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="warnings" className="mt-4 space-y-4">
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Constraint Warnings</CardTitle>
                   <CardDescription>{allWarnings.length || "No active warnings"}</CardDescription>
@@ -601,7 +601,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="compare" className="mt-4 space-y-4">
-              <Card>
+              <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>Scenario Comparison</CardTitle>
                 </CardHeader>
@@ -625,12 +625,12 @@ export default function Home() {
           </Tabs>
         </aside>
 
-        <section className="min-h-[520px]">
+        <section className="min-h-0 overflow-hidden">
           <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
 
-        <aside className="border-t bg-card p-4 lg:border-l lg:border-t-0">
-          <div className="mb-4 flex items-center justify-between">
+        <aside className="overflow-y-auto border-t bg-slate-50/95 p-4 lg:border-l lg:border-t-0">
+          <div className="mb-4 flex items-center justify-between rounded-lg border bg-white p-3 shadow-sm">
             <div>
               <h2 className="text-base font-semibold">Route Plan</h2>
               <p className="text-sm text-muted-foreground">
@@ -641,7 +641,7 @@ export default function Home() {
           </div>
           <div className="space-y-3">
             {result.routes.map((route) => (
-              <Card key={route.vehicleId}>
+              <Card key={route.vehicleId} className="overflow-hidden border-slate-200">
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="flex items-center gap-2">
@@ -687,16 +687,16 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-background px-3 py-2">
-      <div className="text-[11px] uppercase text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold">{value}</div>
+    <div className="min-w-20 rounded-lg border bg-slate-50 px-3 py-2 shadow-sm">
+      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
+      <div className="text-sm font-semibold capitalize">{value}</div>
     </div>
   );
 }
 
 function ScenarioStat({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-background p-3">
+    <div className="rounded-md border bg-slate-50 p-3">
       <Icon className="mb-2 h-4 w-4 text-primary" />
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold">{value}</div>
@@ -706,7 +706,7 @@ function ScenarioStat({ icon: Icon, label, value }: { icon: LucideIcon; label: s
 
 function RouteMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md bg-secondary p-2">
+    <div className="rounded-md border bg-slate-50 p-2">
       <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
       <div className="font-medium">{value}</div>
     </div>

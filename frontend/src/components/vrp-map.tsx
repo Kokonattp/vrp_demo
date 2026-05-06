@@ -9,9 +9,9 @@ const osmStyle: maplibregl.StyleSpecification = {
   sources: {
     osm: {
       type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
       tileSize: 256,
-      attribution: "OpenStreetMap contributors"
+      attribution: "OpenStreetMap contributors, CARTO"
     }
   },
   layers: [
@@ -81,9 +81,9 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     locations.forEach((location) => {
       const markerElement = document.createElement("div");
       markerElement.className = [
-        "grid h-8 w-8 place-items-center rounded-full border-2 text-xs font-bold shadow-lg",
-        location.type === "depot" ? "border-slate-900 bg-white text-slate-900" : "border-white bg-primary text-white",
-        selectedLocationId === location.id ? "ring-4 ring-accent/60" : ""
+        "grid h-9 w-9 place-items-center rounded-full border-[3px] text-xs font-bold shadow-[0_12px_28px_rgba(15,23,42,0.28)]",
+        location.type === "depot" ? "border-white bg-slate-950 text-white" : "border-white bg-primary text-white",
+        selectedLocationId === location.id ? "ring-4 ring-accent/70" : ""
       ].join(" ");
       markerElement.textContent = location.type === "depot" ? "D" : location.name.slice(0, 1).toUpperCase();
 
@@ -117,6 +117,7 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     const renderRoutes = () => {
       routes.forEach((route) => {
         const sourceId = `route-${route.vehicleId}`;
+        const casingLayerId = `route-casing-${route.vehicleId}`;
         const layerId = `route-line-${route.vehicleId}`;
         const coordinates = route.geometry.map((point) => [point.lng, point.lat]);
         const geojson: GeoJSON.Feature<GeoJSON.LineString> = {
@@ -134,13 +135,27 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
         } else {
           map.addSource(sourceId, { type: "geojson", data: geojson });
           map.addLayer({
+            id: casingLayerId,
+            type: "line",
+            source: sourceId,
+            paint: {
+              "line-color": "#ffffff",
+              "line-width": 9,
+              "line-opacity": 0.78
+            },
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            }
+          });
+          map.addLayer({
             id: layerId,
             type: "line",
             source: sourceId,
             paint: {
               "line-color": route.color,
               "line-width": 5,
-              "line-opacity": 0.86
+              "line-opacity": 0.9
             },
             layout: {
               "line-cap": "round",
@@ -152,8 +167,8 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
 
       const activeIds = new Set(routes.map((route) => route.vehicleId));
       map.getStyle().layers?.forEach((layer) => {
-        if (layer.id.startsWith("route-line-")) {
-          const vehicleId = layer.id.replace("route-line-", "");
+        if (layer.id.startsWith("route-line-") || layer.id.startsWith("route-casing-")) {
+          const vehicleId = layer.id.replace("route-line-", "").replace("route-casing-", "");
           if (!activeIds.has(vehicleId) && map.getLayer(layer.id)) {
             map.removeLayer(layer.id);
           }
@@ -176,5 +191,5 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     }
   }, [routes]);
 
-  return <div ref={containerRef} className="h-full min-h-[520px] w-full overflow-hidden rounded-none bg-muted" />;
+  return <div ref={containerRef} className="h-full min-h-0 w-full overflow-hidden bg-muted" />;
 }
