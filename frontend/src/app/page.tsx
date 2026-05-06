@@ -16,7 +16,7 @@ import {
   Upload
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { ChangeEvent, DragEvent, ReactNode, useCallback, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -224,6 +224,7 @@ export default function Home() {
   const [csvText, setCsvText] = useState("depot-bkk,Bangkok Distribution Hub,13.7563,100.5018,Bangkok\nstore-new,New Store,13.7440,100.5620,Sukhumvit");
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
+  const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
   const [scenarioName, setScenarioName] = useState("morning-wave");
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
@@ -254,6 +255,21 @@ export default function Home() {
     [result]
   );
 
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 12000);
+
+    fetch(`${API_URL}/health`, { signal: controller.signal })
+      .then((response) => setOptimizerState(response.ok ? "ready" : "offline"))
+      .catch(() => setOptimizerState("offline"))
+      .finally(() => window.clearTimeout(timer));
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, []);
+
   const updateLocation = useCallback((id: string, coordinate: Coordinate) => {
     setLocations((current) =>
       current.map((location) => (location.id === id ? { ...location, lat: coordinate.lat, lng: coordinate.lng } : location))
@@ -263,6 +279,7 @@ export default function Home() {
   const runOptimization = async () => {
     if (!depot) return;
     setIsRunning(true);
+    setOptimizerState((current) => (current === "ready" ? current : "warming"));
     const payload: OptimizeRequest = {
       scenarioId: scenarioName || `scenario-${Date.now()}`,
       depotId: depot.id,
@@ -279,9 +296,11 @@ export default function Home() {
       });
       if (!response.ok) throw new Error(`Optimizer returned ${response.status}`);
       const optimized = (await response.json()) as ScenarioResult;
+      setOptimizerState("ready");
       setResult(optimized);
       setComparison((current) => [optimized, ...current.filter((item) => item.scenarioId !== optimized.scenarioId)].slice(0, 4));
     } catch {
+      setOptimizerState("offline");
       const fallback = buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders);
       setResult(fallback);
       setComparison((current) => [fallback, ...current.filter((item) => item.scenarioId !== fallback.scenarioId)].slice(0, 4));
@@ -422,10 +441,10 @@ export default function Home() {
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Metric label="Optimizer" value={optimizerState} />
           <Metric label="Stores" value={locations.filter((location) => location.type === "store").length.toString()} />
           <Metric label="Vehicles" value={vehicles.length.toString()} />
           <Metric label="Demand" value={`${Math.round(totalDemand.kg)} kg`} />
-          <Metric label="Capacity" value={`${Math.round(totalCapacity.kg)} kg`} />
         </div>
       </header>
 
@@ -460,7 +479,7 @@ export default function Home() {
                   </div>
                   <Button className="w-full" onClick={runOptimization} disabled={isRunning}>
                     <Play className="h-4 w-4" />
-                    {isRunning ? "Running" : "Run VRP"}
+                    {isRunning ? (optimizerState === "warming" ? "Warming optimizer" : "Running") : "Run VRP"}
                   </Button>
                 </CardContent>
               </Card>
@@ -540,7 +559,7 @@ export default function Home() {
                   </div>
                   <Button className="w-full" onClick={runOptimization} disabled={isRunning}>
                     <Play className="h-4 w-4" />
-                    {isRunning ? "Optimizing" : "Optimize Routes"}
+                    {isRunning ? (optimizerState === "warming" ? "Warming optimizer" : "Optimizing") : "Optimize Routes"}
                   </Button>
                 </CardContent>
               </Card>
