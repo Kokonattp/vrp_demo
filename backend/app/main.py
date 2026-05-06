@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - lets local dev run before dependencies
 
 
 ROUTE_COLORS = ["#047f8f", "#d97706", "#6d5dfc", "#0f766e", "#be123c"]
-OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "").rstrip("/")
+OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "https://router.project-osrm.org").rstrip("/")
 FRONTEND_ORIGINS = [
     origin.strip()
     for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")

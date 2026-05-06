@@ -38,7 +38,7 @@ export function TabsTrigger({
     <button
       type="button"
       className={cn(
-        "rounded-md px-3 py-1.5 text-xs font-semibold text-muted-foreground transition-all hover:bg-secondary hover:text-foreground",
+        "inline-flex items-center rounded-md px-3 py-1.5 text-xs font-semibold leading-none text-muted-foreground transition-all hover:bg-secondary hover:text-foreground",
         selected && "border-2 border-foreground bg-primary text-foreground shadow-[2px_2px_0_hsl(var(--foreground))]",
         className
       )}
