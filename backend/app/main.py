@@ -132,6 +132,11 @@ def leapcell_healthcheck_alt():
     return {"status": "ok"}
 
 
+@app.get("/kaithhealth")
+def leapcell_startup_probe():
+    return {"status": "ok"}
+
+
 @app.post("/api/optimize", response_model=ScenarioResult)
 async def optimize(request: OptimizeRequest):
     if not request.locations or not request.vehicles or not request.orders:
