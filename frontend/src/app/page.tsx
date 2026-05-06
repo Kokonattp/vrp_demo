@@ -15,7 +15,7 @@ import {
   X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -259,14 +259,25 @@ function parseLocationsCsv(csv: string): LocationPoint[] {
     .filter((location) => Number.isFinite(location.lat) && Number.isFinite(location.lng));
 }
 
+function emptyScenarioResult(scenarioId: string): ScenarioResult {
+  return {
+    scenarioId,
+    status: "fallback",
+    objective: 0,
+    totalDistanceKm: 0,
+    totalDurationMinutes: 0,
+    unassignedOrders: [],
+    warnings: [],
+    routes: []
+  };
+}
+
 export default function Home() {
   const [activePanel, setActivePanel] = useState<(typeof panels)[number]["id"]>("upload");
   const [locations, setLocations] = useState<LocationPoint[]>(sampleLocations);
   const [vehicles, setVehicles] = useState<Vehicle[]>(sampleVehicles);
   const [orders, setOrders] = useState<Order[]>(sampleOrders);
-  const [result, setResult] = useState<ScenarioResult>(() =>
-    buildLocalFallback("baseline", "depot-bkk", sampleLocations, sampleVehicles, sampleOrders)
-  );
+  const [result, setResult] = useState<ScenarioResult>(() => emptyScenarioResult("baseline"));
   const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
   const [csvText, setCsvText] = useState("depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร\nstore-new,สาขาใหม่,13.7440,100.5620,สุขุมวิท");
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
@@ -274,7 +285,7 @@ export default function Home() {
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
   const [scenarioName, setScenarioName] = useState("morning-wave");
   const [showGuide, setShowGuide] = useState(false);
-  const autoOptimizedRef = useRef(false);
+  const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const totalDemand = useMemo(
@@ -323,6 +334,8 @@ export default function Home() {
     setLocations((current) =>
       current.map((location) => (location.id === id ? { ...location, lat: coordinate.lat, lng: coordinate.lng } : location))
     );
+    setResult((current) => emptyScenarioResult(current.scenarioId));
+    setHasCalculatedRoute(false);
   }, []);
 
   const runOptimization = useCallback(async (options?: { keepPanel?: boolean }) => {
@@ -347,11 +360,13 @@ export default function Home() {
       const optimized = (await response.json()) as ScenarioResult;
       setOptimizerState("ready");
       setResult(optimized);
+      setHasCalculatedRoute(true);
       setComparison((current) => [optimized, ...current.filter((item) => item.scenarioId !== optimized.scenarioId)].slice(0, 4));
     } catch {
       setOptimizerState("offline");
       const fallback = buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders);
       setResult(fallback);
+      setHasCalculatedRoute(true);
       setComparison((current) => [fallback, ...current.filter((item) => item.scenarioId !== fallback.scenarioId)].slice(0, 4));
     } finally {
       setIsRunning(false);
@@ -361,14 +376,10 @@ export default function Home() {
     }
   }, [depot, locations, orders, scenarioName, vehicles]);
 
-  useEffect(() => {
-    if (optimizerState !== "ready" || autoOptimizedRef.current || isRunning) return;
-    autoOptimizedRef.current = true;
-    void runOptimization({ keepPanel: true });
-  }, [isRunning, optimizerState, runOptimization]);
-
   const addVehicle = () => {
     if (!depot) return;
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
     setVehicles((current) => [
       ...current,
       {
@@ -387,6 +398,8 @@ export default function Home() {
   const addOrder = () => {
     const store = locations.find((location) => location.type === "store");
     if (!store) return;
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
     setOrders((current) => [
       ...current,
       {
@@ -408,6 +421,8 @@ export default function Home() {
     const hasDepot = parsed.some((location) => location.type === "depot");
     setLocations(hasDepot ? parsed : [{ ...parsed[0], type: "depot" }, ...parsed.slice(1)]);
     setSelectedLocationId(parsed[0].id);
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
   };
 
   const importCsvFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -756,13 +771,33 @@ export default function Home() {
             <div>
               <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
               <p className="text-sm text-muted-foreground">
-                {isRunning ? "กำลังคำนวณเส้นถนนจริง..." : `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที`}
+                {isRunning
+                  ? "กำลังคำนวณเส้นถนนจริง..."
+                  : hasCalculatedRoute
+                    ? `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที`
+                    : "แสดงตำแหน่งร้านก่อน ยังไม่วาดเส้นทาง"}
               </p>
             </div>
-            <Badge variant={result.status === "optimized" ? "success" : "warning"}>{isRunning ? "กำลังคำนวณ" : statusLabel(result.status)}</Badge>
+            <Badge variant={result.status === "optimized" ? "success" : "warning"}>
+              {isRunning ? "กำลังคำนวณ" : hasCalculatedRoute ? statusLabel(result.status) : "ยังไม่คำนวณ"}
+            </Badge>
           </div>
           <div className="space-y-3">
-            {result.routes.map((route) => {
+            {!hasCalculatedRoute && (
+              <Card className="border-slate-200">
+                <CardContent className="space-y-3 pt-4">
+                  <p className="text-sm font-semibold">ตอนนี้แสดงเฉพาะตำแหน่งร้านทั้งหมด</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    เมื่อพร้อมจัด route ให้ไปขั้นตอน “ออเดอร์และคำนวณ” แล้วกดคำนวณ ระบบจะวาดเส้นทางตามถนนจริงจาก routing API
+                  </p>
+                  <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
+                    <Play className="h-4 w-4" />
+                    คำนวณเส้นทางจริง
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+            {hasCalculatedRoute && result.routes.map((route) => {
               const displayStops = compactRouteStops(route.stops);
               const deliveryStops = displayStops.filter((stop) => stop.orderIds.length > 0);
               const orderCount = route.stops.filter((stop) => stop.orderId).length;
