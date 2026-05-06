@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+frontend/node_modules/
+backend/.venv/
+
+# build outputs
+.next/
+frontend/.next/
+dist/
+build/
+out/
+
+# local env
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# system
+.DS_Store
+Thumbs.db

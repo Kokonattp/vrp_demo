@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "backend": "uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000"
+  },
+  "devDependencies": {}
+}
