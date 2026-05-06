@@ -4,28 +4,8 @@ import maplibregl, { LngLatBoundsLike, Map } from "maplibre-gl";
 import { useEffect, useMemo, useRef } from "react";
 import type { Coordinate, LocationPoint, RoutePlan } from "@/types/vrp";
 
-const osmStyle: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "OpenStreetMap contributors, CARTO"
-    }
-  },
-  layers: [
-    {
-      id: "osm",
-      type: "raster",
-      source: "osm",
-      paint: {
-        "raster-saturation": -0.18,
-        "raster-contrast": -0.08
-      }
-    }
-  ]
-};
+const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const routeLineColor = "#1B2E4B";
 
 type VrpMapProps = {
   locations: LocationPoint[];
@@ -51,7 +31,7 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     if (!containerRef.current || mapRef.current) return;
     mapRef.current = new maplibregl.Map({
       container: containerRef.current,
-      style: osmStyle,
+      style: mapStyle,
       center: [100.5018, 13.7563],
       zoom: 11,
       attributionControl: false
@@ -85,9 +65,9 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     locations.forEach((location) => {
       const markerElement = document.createElement("div");
       markerElement.className = [
-        "grid h-9 w-9 place-items-center rounded-full border-[3px] text-xs font-bold shadow-[0_12px_28px_rgba(15,23,42,0.28)]",
-        location.type === "depot" ? "border-white bg-slate-950 text-white" : "border-white bg-primary text-white",
-        selectedLocationId === location.id ? "ring-4 ring-accent/70" : ""
+        "grid h-7 w-7 place-items-center rounded-full border-[3px] border-white text-[10px] font-bold shadow-[0_8px_18px_rgba(15,23,42,0.12)]",
+        location.type === "depot" ? "bg-[#1B2E4B] text-white" : "bg-[#EF4444] text-white",
+        selectedLocationId === location.id ? "ring-4 ring-blue-500/20" : ""
       ].join(" ");
       markerElement.textContent = location.type === "depot" ? "D" : location.name.slice(0, 1).toUpperCase();
 
@@ -143,9 +123,10 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
             type: "line",
             source: sourceId,
             paint: {
-              "line-color": "#ffffff",
-              "line-width": 9,
-              "line-opacity": 0.78
+              "line-color": routeLineColor,
+              "line-width": 8,
+              "line-opacity": 0.08,
+              "line-blur": 6
             },
             layout: {
               "line-cap": "round",
@@ -157,9 +138,9 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
             type: "line",
             source: sourceId,
             paint: {
-              "line-color": route.color,
-              "line-width": 5,
-              "line-opacity": 0.9
+              "line-color": routeLineColor,
+              "line-width": 4,
+              "line-opacity": 0.85
             },
             layout: {
               "line-cap": "round",

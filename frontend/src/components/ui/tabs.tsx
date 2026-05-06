@@ -24,7 +24,7 @@ export function Tabs({
 }
 
 export function TabsList({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("inline-flex rounded-lg border-2 border-foreground bg-card p-1", className)} {...props} />;
+  return <div className={cn("inline-flex rounded-[20px] bg-transparent p-0", className)} {...props} />;
 }
 
 export function TabsTrigger({
@@ -38,8 +38,8 @@ export function TabsTrigger({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center rounded-md px-3 py-1.5 text-xs font-semibold leading-none text-muted-foreground transition-all hover:bg-secondary hover:text-foreground",
-        selected && "border-2 border-foreground bg-primary text-foreground shadow-[2px_2px_0_hsl(var(--foreground))]",
+        "inline-flex items-center rounded-[20px] border border-border bg-card px-3 py-1.5 text-xs font-semibold leading-none text-primary transition-colors hover:bg-secondary",
+        selected && "border-primary bg-primary text-primary-foreground",
         className
       )}
       onClick={() => context?.onValueChange(value)}

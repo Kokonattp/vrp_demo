@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700;800&display=swap");
 @import "maplibre-gl/dist/maplibre-gl.css";
 
 @tailwind base;
@@ -6,23 +7,23 @@
 
 @layer base {
   :root {
-    --background: 48 36% 96%;
-    --foreground: 220 26% 8%;
+    --background: 210 40% 98%;
+    --foreground: 216 47% 20%;
     --card: 0 0% 100%;
-    --card-foreground: 220 26% 8%;
-    --primary: 48 100% 58%;
-    --primary-foreground: 220 26% 8%;
-    --secondary: 48 34% 91%;
-    --secondary-foreground: 220 26% 8%;
-    --muted: 45 20% 91%;
-    --muted-foreground: 220 10% 38%;
-    --accent: 171 86% 34%;
+    --card-foreground: 216 47% 20%;
+    --primary: 216 47% 20%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 216 47% 20%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 217 91% 60%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 18% 12%;
-    --input: 220 18% 12%;
-    --ring: 48 100% 58%;
+    --border: 210 40% 92%;
+    --input: 210 40% 88%;
+    --ring: 216 47% 20%;
   }
 
   * {
@@ -31,7 +32,7 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
+    font-family: "Prompt", "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
     letter-spacing: 0;
     text-rendering: geometricPrecision;
@@ -44,16 +45,16 @@
   input,
   textarea,
   select {
-    font-family: "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
+    font-family: "Prompt", "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
     line-height: 1.45;
     word-break: keep-all;
   }
 }
 
 .maplibregl-popup-content {
-  border: 2px solid #111827;
-  border-radius: 8px;
-  box-shadow: 4px 4px 0 #111827;
+  border: 1px solid #f1f5f9;
+  border-radius: 14px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
   padding: 10px 12px;
 }
 
@@ -62,7 +63,23 @@
 }
 
 .maplibregl-ctrl-group {
-  border-radius: 8px;
-  border: 2px solid #111827;
-  box-shadow: 3px 3px 0 #111827;
+  border: 1px solid #f1f5f9;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.vrp-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #ffffff;
+  border-radius: 9999px;
+  animation: vrp-spin 0.75s linear infinite;
+}
+
+@keyframes vrp-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

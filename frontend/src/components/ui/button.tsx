@@ -10,11 +10,11 @@ export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 const variants: Record<ButtonVariant, string> = {
-  default: "border-2 border-foreground bg-primary text-primary-foreground shadow-[3px_3px_0_hsl(var(--foreground))] hover:-translate-y-0.5 hover:shadow-[4px_4px_0_hsl(var(--foreground))]",
-  secondary: "border-2 border-foreground bg-secondary text-secondary-foreground shadow-[2px_2px_0_hsl(var(--foreground))] hover:bg-secondary/80",
+  default: "bg-primary text-primary-foreground shadow-[0_8px_20px_rgba(27,46,75,0.12)] hover:bg-primary/92",
+  secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
   ghost: "hover:bg-secondary text-foreground",
-  outline: "border-2 border-foreground bg-card text-foreground shadow-[2px_2px_0_hsl(var(--foreground))] hover:bg-primary",
-  destructive: "border-2 border-foreground bg-destructive text-destructive-foreground shadow-[3px_3px_0_hsl(var(--foreground))] hover:bg-destructive/90"
+  outline: "border border-border bg-card text-foreground hover:bg-secondary",
+  destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90"
 };
 
 const sizes: Record<ButtonSize, string> = {
@@ -28,7 +28,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     <button
       ref={ref}
       className={cn(
-        "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-semibold leading-none transition-all disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl font-semibold leading-none transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         variants[variant],
         sizes[size],
         className

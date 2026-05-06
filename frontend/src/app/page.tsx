@@ -499,10 +499,10 @@ export default function Home() {
   };
 
   return (
-    <main className="h-screen overflow-hidden bg-[#fbf7e8]">
+    <main className="h-screen overflow-hidden bg-[#F8FAFC]">
       {showGuide && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-lg border bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/30 p-4">
+          <div className="w-full max-w-xl rounded-[14px] border border-border bg-white shadow-[0_16px_36px_rgba(15,23,42,0.08)]">
             <div className="flex items-start justify-between gap-4 border-b p-5">
               <div>
                 <Badge variant="success">คู่มือเร็ว</Badge>
@@ -521,8 +521,8 @@ export default function Home() {
                 ["2", "สร้างข้อมูลจำลอง", "กำหนดรถ ความจุ ออเดอร์ น้ำหนัก CBM เวลาเข้ารับ/ส่ง และ service time"],
                 ["3", "กดคำนวณ VRP", "ระบบส่งข้อมูลไป backend OR-Tools เพื่อแบ่งงานให้รถและจัดลำดับจุดส่ง"]
               ].map(([number, title, detail]) => (
-                <div key={number} className="flex gap-3 rounded-lg border bg-slate-50 p-3">
-                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
+                <div key={number} className="flex gap-3 rounded-[14px] border border-border bg-[#F8FAFC] p-3">
+                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-sm font-semibold text-primary-foreground">
                     {number}
                   </div>
                   <div>
@@ -543,10 +543,10 @@ export default function Home() {
         </div>
       )}
 
-      <header className="flex h-[78px] flex-col gap-3 border-b-2 border-foreground bg-[#fffdf5] px-5 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
+      <header className="flex h-[78px] flex-col gap-3 border-b border-border bg-white px-5 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
         <div>
           <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-lg border-2 border-foreground bg-primary text-primary-foreground shadow-[3px_3px_0_hsl(var(--foreground))]">
+            <div className="grid h-11 w-11 place-items-center rounded-[14px] bg-primary text-primary-foreground">
               <Route className="h-5 w-5" />
             </div>
             <div>
@@ -565,9 +565,9 @@ export default function Home() {
       </header>
 
       <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_396px]">
-        <aside className="overflow-y-auto border-b-2 bg-[#fbf7e8] p-4 backdrop-blur lg:border-b-0 lg:border-r-2">
+        <aside className="overflow-y-auto border-b border-border bg-[#F8FAFC] p-4 lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
-            <div className="mb-4 rounded-lg border-2 border-foreground bg-[#fffdf5] p-3 shadow-[4px_4px_0_hsl(var(--foreground))]">
+            <div className="mb-4 rounded-[14px] border border-border bg-white p-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold">ทำงาน 3 ขั้นตอน</p>
@@ -579,13 +579,13 @@ export default function Home() {
               </div>
             </div>
 
-            <TabsList className="grid w-full grid-cols-1 gap-1.5 bg-[#fffdf5] p-1.5 shadow-[4px_4px_0_hsl(var(--foreground))]">
+            <TabsList className="grid w-full grid-cols-1 gap-2">
               {panels.map((panel) => {
                 const Icon = panel.icon;
                 const stepNumber = panels.findIndex((item) => item.id === panel.id) + 1;
                 return (
                   <TabsTrigger key={panel.id} value={panel.id} className="h-10 justify-start gap-3 px-3 text-sm">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-secondary text-[11px] font-semibold text-muted-foreground">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-secondary text-[11px] font-semibold text-muted-foreground">
                       {stepNumber}
                     </span>
                     <Icon className="h-4 w-4" />
@@ -610,7 +610,7 @@ export default function Home() {
                     <ScenarioStat icon={Clock3} label="เวลาบริการ" value={`${orders.reduce((sum, order) => sum + order.serviceMinutes, 0)} นาที`} />
                   </div>
                   <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
-                    <Play className="h-4 w-4" />
+                    {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
                     {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังคำนวณ") : "คำนวณเส้นทาง"}
                   </Button>
                 </CardContent>
@@ -690,7 +690,7 @@ export default function Home() {
                     ))}
                   </div>
                   <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
-                    <Play className="h-4 w-4" />
+                    {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
                     {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังจัดเส้นทาง") : "จัดเส้นทาง"}
                   </Button>
                 </CardContent>
@@ -758,7 +758,7 @@ export default function Home() {
         </aside>
 
         <section className="relative min-h-0 overflow-hidden">
-          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-lg border-2 border-foreground bg-[#fffdf5]/95 px-3 py-2 shadow-[3px_3px_0_hsl(var(--foreground))] backdrop-blur">
+          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-xl border border-border bg-white/95 px-3 py-2 shadow-[0_8px_20px_rgba(15,23,42,0.08)]">
             <p className="text-xs font-medium">
               แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
             </p>
@@ -766,8 +766,8 @@ export default function Home() {
           <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
 
-        <aside className="overflow-y-auto border-t-2 bg-[#fbf7e8] p-4 backdrop-blur lg:border-l-2 lg:border-t-0">
-          <div className="mb-4 flex items-center justify-between rounded-lg border-2 border-foreground bg-[#fffdf5] p-3 shadow-[4px_4px_0_hsl(var(--foreground))]">
+        <aside className="overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:border-l lg:border-t-0">
+          <div className="mb-4 flex items-center justify-between rounded-[14px] border border-border bg-white p-3">
             <div>
               <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
               <p className="text-sm text-muted-foreground">
@@ -791,8 +791,8 @@ export default function Home() {
                     เมื่อพร้อมจัด route ให้ไปขั้นตอน “ออเดอร์และคำนวณ” แล้วกดคำนวณ ระบบจะวาดเส้นทางตามถนนจริงจาก routing API
                   </p>
                   <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
-                    <Play className="h-4 w-4" />
-                    คำนวณเส้นทางจริง
+                    {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
+                    {isRunning ? "กำลังคำนวณเส้นถนนจริง" : "คำนวณเส้นทางจริง"}
                   </Button>
                 </CardContent>
               </Card>
@@ -856,21 +856,25 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+function LoadingSpinner() {
+  return <span className="vrp-spinner" aria-hidden="true" />;
+}
+
 function ScenarioStat({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-slate-50 p-3">
+    <div className="rounded-xl bg-[#F8FAFC] p-3">
       <Icon className="mb-2 h-4 w-4 text-primary" />
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold">{value}</div>
+      <div className="text-sm font-bold text-primary">{value}</div>
     </div>
   );
 }
 
 function RouteMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border bg-slate-50 p-2">
-      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
-      <div className="font-medium">{value}</div>
+    <div className="rounded-xl bg-[#F8FAFC] px-3 py-2">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="font-bold text-primary">{value}</div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import type { LocationPoint, Order, ScenarioResult, Vehicle } from "@/types/vrp";
 
-export const routeColors = ["#047f8f", "#d97706", "#6d5dfc", "#0f766e", "#be123c"];
+export const routeColors = ["#1B2E4B", "#3B82F6", "#10B981", "#7C3AED", "#EF4444"];
 
 export const sampleLocations: LocationPoint[] = [
   {

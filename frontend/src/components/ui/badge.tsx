@@ -9,11 +9,11 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-md border border-foreground px-2 py-0.5 text-xs font-semibold",
+        "inline-flex items-center rounded-xl px-2.5 py-1 text-[10px] font-semibold",
         variant === "default" && "bg-primary text-primary-foreground",
-        variant === "warning" && "bg-primary text-primary-foreground",
+        variant === "warning" && "bg-amber-100 text-amber-800",
         variant === "muted" && "bg-muted text-muted-foreground",
-        variant === "success" && "bg-emerald-100 text-emerald-950",
+        variant === "success" && "bg-emerald-100 text-emerald-800",
         className
       )}
       {...props}
