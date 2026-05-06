@@ -32,14 +32,34 @@ const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.Vr
 const API_URL = "";
 
 const panels = [
-  { id: "planning", label: "Planning", icon: MapPinned },
-  { id: "upload", label: "Upload", icon: FileUp },
-  { id: "vehicles", label: "Vehicles", icon: Truck },
-  { id: "run", label: "Run VRP", icon: Play },
-  { id: "adjust", label: "Adjust", icon: ArrowRightLeft },
-  { id: "warnings", label: "Warnings", icon: AlertTriangle },
-  { id: "compare", label: "Compare", icon: BarChart3 }
+  { id: "planning", label: "แผนงาน", icon: MapPinned },
+  { id: "upload", label: "นำเข้าพิกัด", icon: FileUp },
+  { id: "vehicles", label: "รถจำลอง", icon: Truck },
+  { id: "run", label: "คำนวณ VRP", icon: Play },
+  { id: "adjust", label: "ปรับเส้นทาง", icon: ArrowRightLeft },
+  { id: "warnings", label: "ข้อจำกัด", icon: AlertTriangle },
+  { id: "compare", label: "เทียบแผน", icon: BarChart3 }
 ] as const;
+
+function statusLabel(value: ScenarioResult["status"] | "warming" | "ready" | "offline") {
+  const labels = {
+    optimized: "คำนวณแล้ว",
+    fallback: "ประมาณการ",
+    infeasible: "จัดไม่ได้",
+    warming: "กำลังปลุก",
+    ready: "พร้อมใช้",
+    offline: "ออฟไลน์"
+  };
+  return labels[value];
+}
+
+function locationTypeLabel(type: LocationPoint["type"]) {
+  return type === "depot" ? "คลัง" : "สาขา";
+}
+
+function priorityLabel(priority: Order["priority"]) {
+  return priority === "high" ? "ด่วน" : "ปกติ";
+}
 
 function timeToMinutes(value: string) {
   const [hours, minutes] = value.split(":").map(Number);
@@ -133,8 +153,8 @@ function buildLocalFallback(
           elapsed = timeToMinutes(order.timeWindowStart);
         }
         if (elapsed > timeToMinutes(order.timeWindowEnd)) {
-          stopWarnings.push("Time window");
-          warnings.push(`${order.id} misses ${order.timeWindowEnd}`);
+          stopWarnings.push("เกินช่วงเวลา");
+          warnings.push(`${order.id} เกินเวลาส่ง ${order.timeWindowEnd}`);
         }
         stops.push({
           locationId: location.id,
@@ -187,7 +207,7 @@ function buildLocalFallback(
     totalDistanceKm: Number(routes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
     totalDurationMinutes: routes.reduce((sum, route) => sum + route.durationMinutes, 0),
     unassignedOrders,
-    warnings: ["Local fallback used. Start the FastAPI backend for OR-Tools optimization."],
+    warnings: ["ใช้แผนประมาณการในเครื่อง เพราะยังติดต่อ backend OR-Tools ไม่สำเร็จ"],
     routes
   };
 }
@@ -202,7 +222,7 @@ function parseLocationsCsv(csv: string): LocationPoint[] {
       const type: LocationPoint["type"] = index === 0 && (id || "").toLowerCase().includes("depot") ? "depot" : "store";
       return {
         id: id || `store-${index + 1}`,
-        name: name || `Store ${index + 1}`,
+        name: name || `สาขา ${index + 1}`,
         type,
         lat: Number(lat),
         lng: Number(lng),
@@ -221,7 +241,7 @@ export default function Home() {
     buildLocalFallback("baseline", "depot-bkk", sampleLocations, sampleVehicles, sampleOrders)
   );
   const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
-  const [csvText, setCsvText] = useState("depot-bkk,Bangkok Distribution Hub,13.7563,100.5018,Bangkok\nstore-new,New Store,13.7440,100.5620,Sukhumvit");
+  const [csvText, setCsvText] = useState("depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร\nstore-new,สาขาใหม่,13.7440,100.5620,สุขุมวิท");
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
@@ -251,7 +271,7 @@ export default function Home() {
     [vehicles]
   );
   const allWarnings = useMemo(
-    () => [...result.warnings, ...result.routes.flatMap((route) => route.warnings), ...result.unassignedOrders.map((id) => `${id} unassigned`)],
+    () => [...result.warnings, ...result.routes.flatMap((route) => route.warnings), ...result.unassignedOrders.map((id) => `${id} ยังไม่ถูกจัดส่ง`)],
     [result]
   );
 
@@ -316,7 +336,7 @@ export default function Home() {
       ...current,
       {
         id: `veh-${current.length + 1}`,
-        name: `Virtual Van ${current.length + 1}`,
+        name: `รถจำลอง ${current.length + 1}`,
         capacityKg: 1000,
         capacityCbm: 10,
         maxStops: 6,
@@ -400,9 +420,9 @@ export default function Home() {
       const loadKg = orderStops.reduce((sum, stop) => sum + stop.loadKg, 0);
       const loadCbm = orderStops.reduce((sum, stop) => sum + stop.loadCbm, 0);
       const warnings = [
-        ...(vehicle && loadKg > vehicle.capacityKg ? [`${vehicle.name} capacity kg exceeded`] : []),
-        ...(vehicle && loadCbm > vehicle.capacityCbm ? [`${vehicle.name} capacity CBM exceeded`] : []),
-        ...(vehicle && orderStops.length > vehicle.maxStops ? [`${vehicle.name} max stops exceeded`] : [])
+        ...(vehicle && loadKg > vehicle.capacityKg ? [`${vehicle.name} น้ำหนักเกินความจุ`] : []),
+        ...(vehicle && loadCbm > vehicle.capacityCbm ? [`${vehicle.name} ปริมาตรเกินความจุ`] : []),
+        ...(vehicle && orderStops.length > vehicle.maxStops ? [`${vehicle.name} จำนวนจุดส่งเกินกำหนด`] : [])
       ];
       const routeDistance = stops.slice(1).reduce((sum, stop, index) => sum + distanceKm(stops[index], stop), 0);
       return {
@@ -422,34 +442,34 @@ export default function Home() {
       routes: nextRoutes,
       totalDistanceKm: Number(nextRoutes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
       totalDurationMinutes: nextRoutes.reduce((sum, route) => sum + route.durationMinutes, 0),
-      warnings: ["Manual route adjustment applied. Re-run VRP to re-optimize sequence."]
+      warnings: ["มีการปรับเส้นทางด้วยมือ ควรคำนวณ VRP ใหม่เพื่อจัดลำดับจุดส่งอีกครั้ง"]
     }));
   };
 
   return (
-    <main className="h-screen overflow-hidden bg-background">
-      <header className="flex h-[76px] flex-col gap-3 border-b bg-white/95 px-5 py-3 shadow-[0_8px_30px_rgba(15,23,42,0.06)] lg:flex-row lg:items-center lg:justify-between lg:px-6">
+    <main className="h-screen overflow-hidden bg-[linear-gradient(180deg,#f7fafc_0%,#eef4f7_100%)]">
+      <header className="flex h-[78px] flex-col gap-3 border-b bg-white/95 px-5 py-3 shadow-[0_8px_30px_rgba(15,23,42,0.06)] lg:flex-row lg:items-center lg:justify-between lg:px-6">
         <div>
           <div className="flex items-center gap-3">
             <div className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-primary-foreground shadow-[0_12px_26px_rgba(15,118,128,0.22)]">
               <Route className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold tracking-normal">VRP Simulation Studio</h1>
-              <p className="text-xs text-muted-foreground">Real maps, real coordinates, simulated logistics scenarios.</p>
+              <h1 className="text-lg font-semibold tracking-normal">สตูดิโอจำลองแผนขนส่ง VRP</h1>
+              <p className="text-xs text-muted-foreground">ใช้แผนที่จริงและพิกัดจริง เพื่อจำลองคำสั่งส่ง รถ และข้อจำกัด</p>
             </div>
           </div>
         </div>
         <div className="grid grid-cols-4 gap-2">
-          <Metric label="Optimizer" value={optimizerState} />
-          <Metric label="Stores" value={locations.filter((location) => location.type === "store").length.toString()} />
-          <Metric label="Vehicles" value={vehicles.length.toString()} />
-          <Metric label="Demand" value={`${Math.round(totalDemand.kg)} kg`} />
+          <Metric label="ตัวคำนวณ" value={statusLabel(optimizerState)} />
+          <Metric label="สาขา" value={locations.filter((location) => location.type === "store").length.toString()} />
+          <Metric label="รถ" value={vehicles.length.toString()} />
+          <Metric label="น้ำหนัก" value={`${Math.round(totalDemand.kg)} กก.`} />
         </div>
       </header>
 
-      <div className="grid h-[calc(100vh-76px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_390px]">
-        <aside className="overflow-y-auto border-b bg-slate-50/95 p-4 lg:border-b-0 lg:border-r">
+      <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[372px_minmax(0,1fr)_404px]">
+        <aside className="overflow-y-auto border-b bg-white/70 p-4 backdrop-blur lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
             <TabsList className="grid w-full grid-cols-4 gap-1 border bg-white p-1 shadow-sm lg:grid-cols-2">
               {panels.map((panel) => {
@@ -466,27 +486,27 @@ export default function Home() {
             <TabsContent value="planning" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Planning Workspace</CardTitle>
+                  <CardTitle>พื้นที่วางแผน</CardTitle>
                   <CardDescription>{scenarioName}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <Field label="Scenario">
+                  <Field label="ชื่อสถานการณ์">
                     <Input value={scenarioName} onChange={(event) => setScenarioName(event.target.value)} />
                   </Field>
                   <div className="grid grid-cols-2 gap-2">
                     <ScenarioStat icon={Boxes} label="CBM" value={`${totalDemand.cbm.toFixed(1)} / ${totalCapacity.cbm.toFixed(1)}`} />
-                    <ScenarioStat icon={Clock3} label="Service" value={`${orders.reduce((sum, order) => sum + order.serviceMinutes, 0)} min`} />
+                    <ScenarioStat icon={Clock3} label="เวลาบริการ" value={`${orders.reduce((sum, order) => sum + order.serviceMinutes, 0)} นาที`} />
                   </div>
                   <Button className="w-full" onClick={runOptimization} disabled={isRunning}>
                     <Play className="h-4 w-4" />
-                    {isRunning ? (optimizerState === "warming" ? "Warming optimizer" : "Running") : "Run VRP"}
+                    {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังคำนวณ") : "คำนวณเส้นทาง"}
                   </Button>
                 </CardContent>
               </Card>
 
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Locations</CardTitle>
+                  <CardTitle>จุดส่งและคลัง</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {locations.map((location) => (
@@ -497,7 +517,7 @@ export default function Home() {
                       className="flex w-full items-center justify-between rounded-md border bg-white px-3 py-2 text-left text-sm transition-colors hover:bg-secondary"
                     >
                       <span className="truncate">{location.name}</span>
-                      <Badge variant={location.type === "depot" ? "default" : "muted"}>{location.type}</Badge>
+                      <Badge variant={location.type === "depot" ? "default" : "muted"}>{locationTypeLabel(location.type)}</Badge>
                     </button>
                   ))}
                 </CardContent>
@@ -507,15 +527,15 @@ export default function Home() {
             <TabsContent value="upload" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Upload Locations</CardTitle>
-                  <CardDescription>id, name, lat, lng, address</CardDescription>
+                  <CardTitle>นำเข้าพิกัดสาขา</CardTitle>
+                  <CardDescription>id, ชื่อ, lat, lng, ที่อยู่</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
                   <Textarea value={csvText} onChange={(event) => setCsvText(event.target.value)} />
                   <Button className="w-full" onClick={importCsv}>
                     <Upload className="h-4 w-4" />
-                    Import Coordinates
+                    นำเข้าพิกัด
                   </Button>
                 </CardContent>
               </Card>
@@ -524,7 +544,7 @@ export default function Home() {
             <TabsContent value="vehicles" className="mt-4 space-y-4">
               <Button variant="outline" className="w-full" onClick={addVehicle}>
                 <Plus className="h-4 w-4" />
-                Add Virtual Vehicle
+                เพิ่มรถจำลอง
               </Button>
               {vehicles.map((vehicle, index) => (
                 <VehicleEditor
@@ -539,13 +559,13 @@ export default function Home() {
             <TabsContent value="run" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Run VRP</CardTitle>
-                  <CardDescription>{orders.length} simulated delivery orders</CardDescription>
+                  <CardTitle>คำนวณ VRP</CardTitle>
+                  <CardDescription>{orders.length} ออเดอร์จำลอง</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Button variant="outline" className="w-full" onClick={addOrder}>
                     <Plus className="h-4 w-4" />
-                    Add Simulated Order
+                    เพิ่มออเดอร์จำลอง
                   </Button>
                   <div className="space-y-2">
                     {orders.map((order) => (
@@ -559,7 +579,7 @@ export default function Home() {
                   </div>
                   <Button className="w-full" onClick={runOptimization} disabled={isRunning}>
                     <Play className="h-4 w-4" />
-                    {isRunning ? (optimizerState === "warming" ? "Warming optimizer" : "Optimizing") : "Optimize Routes"}
+                    {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังจัดเส้นทาง") : "จัดเส้นทาง"}
                   </Button>
                 </CardContent>
               </Card>
@@ -568,8 +588,8 @@ export default function Home() {
             <TabsContent value="adjust" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Drag Route Adjustment</CardTitle>
-                  <CardDescription>{result.routes.length} active routes</CardDescription>
+                  <CardTitle>ปรับเส้นทางด้วยการลาก</CardTitle>
+                  <CardDescription>{result.routes.length} เส้นทางที่ใช้งานอยู่</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {result.routes.map((route) => (
@@ -582,8 +602,8 @@ export default function Home() {
             <TabsContent value="warnings" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Constraint Warnings</CardTitle>
-                  <CardDescription>{allWarnings.length || "No active warnings"}</CardDescription>
+                  <CardTitle>แจ้งเตือนข้อจำกัด</CardTitle>
+                  <CardDescription>{allWarnings.length ? `${allWarnings.length} รายการ` : "ไม่มีข้อจำกัดที่ผิดเงื่อนไข"}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {allWarnings.length ? (
@@ -594,7 +614,7 @@ export default function Home() {
                       </div>
                     ))
                   ) : (
-                    <div className="rounded-md border bg-secondary p-3 text-sm text-muted-foreground">All constraints pass for this scenario.</div>
+                    <div className="rounded-md border bg-secondary p-3 text-sm text-muted-foreground">สถานการณ์นี้ผ่านเงื่อนไขทั้งหมด</div>
                   )}
                 </CardContent>
               </Card>
@@ -603,19 +623,19 @@ export default function Home() {
             <TabsContent value="compare" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>Scenario Comparison</CardTitle>
+                  <CardTitle>เปรียบเทียบสถานการณ์</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {comparison.map((scenario) => (
                     <div key={scenario.scenarioId} className="rounded-md border p-3">
                       <div className="mb-2 flex items-center justify-between">
                         <span className="font-medium">{scenario.scenarioId}</span>
-                        <Badge variant={scenario.unassignedOrders.length ? "warning" : "success"}>{scenario.status}</Badge>
+                        <Badge variant={scenario.unassignedOrders.length ? "warning" : "success"}>{statusLabel(scenario.status)}</Badge>
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-                        <span>{scenario.totalDistanceKm.toFixed(1)} km</span>
-                        <span>{scenario.totalDurationMinutes} min</span>
-                        <span>{scenario.unassignedOrders.length} open</span>
+                        <span>{scenario.totalDistanceKm.toFixed(1)} กม.</span>
+                        <span>{scenario.totalDurationMinutes} นาที</span>
+                        <span>{scenario.unassignedOrders.length} ค้าง</span>
                       </div>
                     </div>
                   ))}
@@ -629,15 +649,15 @@ export default function Home() {
           <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
 
-        <aside className="overflow-y-auto border-t bg-slate-50/95 p-4 lg:border-l lg:border-t-0">
+        <aside className="overflow-y-auto border-t bg-white/70 p-4 backdrop-blur lg:border-l lg:border-t-0">
           <div className="mb-4 flex items-center justify-between rounded-lg border bg-white p-3 shadow-sm">
             <div>
-              <h2 className="text-base font-semibold">Route Plan</h2>
+              <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
               <p className="text-sm text-muted-foreground">
-                {result.totalDistanceKm.toFixed(1)} km, {result.totalDurationMinutes} min
+                {result.totalDistanceKm.toFixed(1)} กม., {result.totalDurationMinutes} นาที
               </p>
             </div>
-            <Badge variant={result.status === "optimized" ? "success" : "warning"}>{result.status}</Badge>
+            <Badge variant={result.status === "optimized" ? "success" : "warning"}>{statusLabel(result.status)}</Badge>
           </div>
           <div className="space-y-3">
             {result.routes.map((route) => (
@@ -648,14 +668,14 @@ export default function Home() {
                       <span className="h-3 w-3 rounded-full" style={{ backgroundColor: route.color }} />
                       {route.vehicleName}
                     </CardTitle>
-                    <span className="text-xs text-muted-foreground">{route.stops.length - 2} stops</span>
+                    <span className="text-xs text-muted-foreground">{route.stops.length - 2} จุดส่ง</span>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <div className="grid grid-cols-3 gap-2 text-xs">
-                    <RouteMetric label="Distance" value={`${route.distanceKm.toFixed(1)} km`} />
-                    <RouteMetric label="Duration" value={`${route.durationMinutes} m`} />
-                    <RouteMetric label="Load" value={`${Math.round(route.loadKg)} kg`} />
+                    <RouteMetric label="ระยะทาง" value={`${route.distanceKm.toFixed(1)} กม.`} />
+                    <RouteMetric label="เวลา" value={`${route.durationMinutes} นาที`} />
+                    <RouteMetric label="น้ำหนัก" value={`${Math.round(route.loadKg)} กก.`} />
                   </div>
                   <div className="space-y-1">
                     {route.stops.map((stop, index) => (
@@ -689,7 +709,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-20 rounded-lg border bg-slate-50 px-3 py-2 shadow-sm">
       <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold capitalize">{value}</div>
+      <div className="text-sm font-semibold">{value}</div>
     </div>
   );
 }
@@ -731,24 +751,24 @@ function VehicleEditor({
         </CardTitle>
       </CardHeader>
       <CardContent className="grid grid-cols-2 gap-3">
-        <Field label="Name">
+        <Field label="ชื่อรถ">
           <Input value={vehicle.name} onChange={(event) => onChange({ ...vehicle, name: event.target.value })} />
         </Field>
-        <Field label="Max stops">
+        <Field label="จุดส่งสูงสุด">
           <Input
             type="number"
             value={vehicle.maxStops}
             onChange={(event) => onChange({ ...vehicle, maxStops: Number(event.target.value) })}
           />
         </Field>
-        <Field label="Capacity kg">
+        <Field label="รับน้ำหนัก กก.">
           <Input
             type="number"
             value={vehicle.capacityKg}
             onChange={(event) => onChange({ ...vehicle, capacityKg: Number(event.target.value) })}
           />
         </Field>
-        <Field label="Capacity CBM">
+        <Field label="รับปริมาตร CBM">
           <Input
             type="number"
             value={vehicle.capacityCbm}
@@ -773,10 +793,10 @@ function OrderRow({
     <div className="rounded-md border p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-sm font-medium">{order.id}</span>
-        <Badge variant={order.priority === "high" ? "warning" : "muted"}>{order.priority}</Badge>
+        <Badge variant={order.priority === "high" ? "warning" : "muted"}>{priorityLabel(order.priority)}</Badge>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <Field label="Store">
+        <Field label="สาขา">
           <select
             className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
             value={order.locationId}
@@ -791,13 +811,13 @@ function OrderRow({
               ))}
           </select>
         </Field>
-        <Field label="Weight kg">
+        <Field label="น้ำหนัก กก.">
           <Input type="number" value={order.weightKg} onChange={(event) => onChange({ ...order, weightKg: Number(event.target.value) })} />
         </Field>
         <Field label="CBM">
           <Input type="number" value={order.cbm} onChange={(event) => onChange({ ...order, cbm: Number(event.target.value) })} />
         </Field>
-        <Field label="Service">
+        <Field label="เวลาบริการ">
           <Input
             type="number"
             value={order.serviceMinutes}
@@ -824,7 +844,7 @@ function RouteDropZone({
     >
       <div className="mb-2 flex items-center justify-between">
         <span className="text-sm font-medium">{route.vehicleName}</span>
-        <span className="text-xs text-muted-foreground">{route.loadKg} kg</span>
+        <span className="text-xs text-muted-foreground">{route.loadKg} กก.</span>
       </div>
       <div className="space-y-1">
         {route.stops

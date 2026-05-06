@@ -31,6 +31,7 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: "Noto Sans Thai", "Leelawadee UI", "Segoe UI", Tahoma, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }

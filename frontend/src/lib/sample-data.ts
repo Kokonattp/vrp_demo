@@ -5,43 +5,43 @@ export const routeColors = ["#047f8f", "#d97706", "#6d5dfc", "#0f766e", "#be123c
 export const sampleLocations: LocationPoint[] = [
   {
     id: "depot-bkk",
-    name: "Bangkok Distribution Hub",
+    name: "ศูนย์กระจายสินค้ากรุงเทพ",
     type: "depot",
     lat: 13.7563,
     lng: 100.5018,
-    address: "Bangkok"
+    address: "กรุงเทพมหานคร"
   },
   {
     id: "store-silom",
-    name: "Silom Store",
+    name: "สาขาสีลม",
     type: "store",
     lat: 13.7246,
     lng: 100.5347
   },
   {
     id: "store-ari",
-    name: "Ari Store",
+    name: "สาขาอารีย์",
     type: "store",
     lat: 13.7801,
     lng: 100.5446
   },
   {
     id: "store-thonglor",
-    name: "Thong Lo Store",
+    name: "สาขาทองหล่อ",
     type: "store",
     lat: 13.7307,
     lng: 100.5826
   },
   {
     id: "store-rama9",
-    name: "Rama 9 Store",
+    name: "สาขาพระราม 9",
     type: "store",
     lat: 13.7579,
     lng: 100.565
   },
   {
     id: "store-bangna",
-    name: "Bang Na Store",
+    name: "สาขาบางนา",
     type: "store",
     lat: 13.6682,
     lng: 100.6047
@@ -51,7 +51,7 @@ export const sampleLocations: LocationPoint[] = [
 export const sampleVehicles: Vehicle[] = [
   {
     id: "veh-1",
-    name: "EV Van 01",
+    name: "รถตู้ไฟฟ้า 01",
     capacityKg: 900,
     capacityCbm: 8,
     maxStops: 5,
@@ -61,7 +61,7 @@ export const sampleVehicles: Vehicle[] = [
   },
   {
     id: "veh-2",
-    name: "Box Truck 02",
+    name: "รถบรรทุกตู้ทึบ 02",
     capacityKg: 1600,
     capacityCbm: 16,
     maxStops: 6,
@@ -132,7 +132,7 @@ export const initialScenarioComparison: ScenarioResult[] = [
     totalDistanceKm: 58.4,
     totalDurationMinutes: 212,
     unassignedOrders: [],
-    warnings: ["Baseline uses haversine estimates until routing API responds."],
+    warnings: ["สถานการณ์พื้นฐานใช้ระยะทางประมาณการระหว่างรอข้อมูล routing API"],
     routes: []
   },
   {
@@ -142,7 +142,7 @@ export const initialScenarioComparison: ScenarioResult[] = [
     totalDistanceKm: 64.7,
     totalDurationMinutes: 248,
     unassignedOrders: ["ord-1005"],
-    warnings: ["One order exceeds remaining capacity in the reduced fleet."],
+    warnings: ["มีหนึ่งออเดอร์ที่เกินความจุคงเหลือของแผนรถลดจำนวน"],
     routes: []
   }
 ];

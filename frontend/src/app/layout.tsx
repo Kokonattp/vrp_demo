@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VRP Simulation Studio",
-  description: "Simulate vehicle routing scenarios over real map data."
+  title: "สตูดิโอจำลอง VRP",
+  description: "วางแผนและจำลองเส้นทางขนส่งบนแผนที่จริง"
 };
 
 export default function RootLayout({
@@ -12,7 +12,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="th">
       <body>{children}</body>
     </html>
   );
