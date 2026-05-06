@@ -475,7 +475,7 @@ export default function Home() {
   };
 
   return (
-    <main className="h-screen overflow-hidden bg-[linear-gradient(180deg,#f7fafc_0%,#eef4f7_100%)]">
+    <main className="h-screen overflow-hidden bg-[#fbf7e8]">
       {showGuide && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm">
           <div className="w-full max-w-xl rounded-lg border bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
@@ -519,14 +519,14 @@ export default function Home() {
         </div>
       )}
 
-      <header className="flex h-[78px] flex-col gap-3 border-b bg-white/95 px-5 py-3 shadow-[0_8px_30px_rgba(15,23,42,0.06)] lg:flex-row lg:items-center lg:justify-between lg:px-6">
+      <header className="flex h-[78px] flex-col gap-3 border-b-2 border-foreground bg-[#fffdf5] px-5 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
         <div>
           <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-lg bg-primary text-primary-foreground shadow-[0_12px_26px_rgba(15,118,128,0.22)]">
+            <div className="grid h-11 w-11 place-items-center rounded-lg border-2 border-foreground bg-primary text-primary-foreground shadow-[3px_3px_0_hsl(var(--foreground))]">
               <Route className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold tracking-normal">สตูดิโอจำลองแผนขนส่ง VRP</h1>
+              <h1 className="text-lg font-bold tracking-normal">สตูดิโอจำลองแผนขนส่ง VRP</h1>
               <p className="text-xs text-muted-foreground">ใช้แผนที่จริงและพิกัดจริง เพื่อจำลองคำสั่งส่ง รถ และข้อจำกัด</p>
             </div>
           </div>
@@ -541,9 +541,9 @@ export default function Home() {
       </header>
 
       <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_396px]">
-        <aside className="overflow-y-auto border-b bg-white/85 p-4 backdrop-blur lg:border-b-0 lg:border-r">
+        <aside className="overflow-y-auto border-b-2 bg-[#fbf7e8] p-4 backdrop-blur lg:border-b-0 lg:border-r-2">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
-            <div className="mb-4 rounded-lg border bg-white p-3 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+            <div className="mb-4 rounded-lg border-2 border-foreground bg-[#fffdf5] p-3 shadow-[4px_4px_0_hsl(var(--foreground))]">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold">ทำงาน 3 ขั้นตอน</p>
@@ -555,7 +555,7 @@ export default function Home() {
               </div>
             </div>
 
-            <TabsList className="grid w-full grid-cols-1 gap-1.5 border bg-white p-1.5 shadow-sm">
+            <TabsList className="grid w-full grid-cols-1 gap-1.5 bg-[#fffdf5] p-1.5 shadow-[4px_4px_0_hsl(var(--foreground))]">
               {panels.map((panel) => {
                 const Icon = panel.icon;
                 const stepNumber = panels.findIndex((item) => item.id === panel.id) + 1;
@@ -734,7 +734,7 @@ export default function Home() {
         </aside>
 
         <section className="relative min-h-0 overflow-hidden">
-          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-lg border bg-white/92 px-3 py-2 shadow-[0_18px_42px_rgba(15,23,42,0.14)] backdrop-blur">
+          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-lg border-2 border-foreground bg-[#fffdf5]/95 px-3 py-2 shadow-[3px_3px_0_hsl(var(--foreground))] backdrop-blur">
             <p className="text-xs font-medium">
               แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
             </p>
@@ -742,8 +742,8 @@ export default function Home() {
           <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
 
-        <aside className="overflow-y-auto border-t bg-white/85 p-4 backdrop-blur lg:border-l lg:border-t-0">
-          <div className="mb-4 flex items-center justify-between rounded-lg border bg-white p-3 shadow-sm">
+        <aside className="overflow-y-auto border-t-2 bg-[#fbf7e8] p-4 backdrop-blur lg:border-l-2 lg:border-t-0">
+          <div className="mb-4 flex items-center justify-between rounded-lg border-2 border-foreground bg-[#fffdf5] p-3 shadow-[4px_4px_0_hsl(var(--foreground))]">
             <div>
               <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
               <p className="text-sm text-muted-foreground">

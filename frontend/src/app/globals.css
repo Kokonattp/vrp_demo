@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Inter:wght@500;600;700&display=swap");
 @import "maplibre-gl/dist/maplibre-gl.css";
 
 @tailwind base;
@@ -6,23 +7,23 @@
 
 @layer base {
   :root {
-    --background: 210 25% 96%;
-    --foreground: 218 34% 14%;
+    --background: 48 36% 96%;
+    --foreground: 220 26% 8%;
     --card: 0 0% 100%;
-    --card-foreground: 218 34% 14%;
-    --primary: 187 86% 29%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 214 24% 93%;
-    --secondary-foreground: 218 34% 14%;
-    --muted: 216 22% 94%;
-    --muted-foreground: 218 13% 43%;
-    --accent: 37 92% 52%;
-    --accent-foreground: 24 20% 14%;
+    --card-foreground: 220 26% 8%;
+    --primary: 48 100% 58%;
+    --primary-foreground: 220 26% 8%;
+    --secondary: 48 34% 91%;
+    --secondary-foreground: 220 26% 8%;
+    --muted: 45 20% 91%;
+    --muted-foreground: 220 10% 38%;
+    --accent: 171 86% 34%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 24% 86%;
-    --input: 214 24% 86%;
-    --ring: 187 86% 29%;
+    --border: 220 18% 12%;
+    --input: 220 18% 12%;
+    --ring: 48 100% 58%;
   }
 
   * {
@@ -31,14 +32,26 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: "Noto Sans Thai", "Leelawadee UI", "Segoe UI", Tahoma, sans-serif;
+    font-family: "IBM Plex Sans Thai", "Inter", "Leelawadee UI", "Segoe UI", Tahoma, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
+    letter-spacing: 0;
+  }
+
+  h1,
+  h2,
+  h3,
+  button,
+  input,
+  textarea,
+  select {
+    font-family: "IBM Plex Sans Thai", "Inter", "Leelawadee UI", "Segoe UI", Tahoma, sans-serif;
   }
 }
 
 .maplibregl-popup-content {
+  border: 2px solid #111827;
   border-radius: 8px;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  box-shadow: 4px 4px 0 #111827;
   padding: 10px 12px;
 }
 
@@ -48,5 +61,6 @@
 
 .maplibregl-ctrl-group {
   border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  border: 2px solid #111827;
+  box-shadow: 3px 3px 0 #111827;
 }
