@@ -3,13 +3,10 @@
 import dynamic from "next/dynamic";
 import {
   AlertTriangle,
-  ArrowRightLeft,
-  BarChart3,
   Boxes,
   CircleHelp,
   Clock3,
   FileUp,
-  MapPinned,
   Play,
   Plus,
   Route,
@@ -34,13 +31,9 @@ const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.Vr
 const API_URL = "";
 
 const panels = [
-  { id: "planning", label: "แผนงาน", icon: MapPinned },
-  { id: "upload", label: "นำเข้าพิกัด", icon: FileUp },
+  { id: "upload", label: "พิกัดสาขา", icon: FileUp },
   { id: "vehicles", label: "รถจำลอง", icon: Truck },
-  { id: "run", label: "คำนวณ VRP", icon: Play },
-  { id: "adjust", label: "ปรับเส้นทาง", icon: ArrowRightLeft },
-  { id: "warnings", label: "ข้อจำกัด", icon: AlertTriangle },
-  { id: "compare", label: "เทียบแผน", icon: BarChart3 }
+  { id: "run", label: "ออเดอร์และคำนวณ", icon: Play }
 ] as const;
 
 function statusLabel(value: ScenarioResult["status"] | "warming" | "ready" | "offline") {
@@ -267,7 +260,7 @@ function parseLocationsCsv(csv: string): LocationPoint[] {
 }
 
 export default function Home() {
-  const [activePanel, setActivePanel] = useState<(typeof panels)[number]["id"]>("planning");
+  const [activePanel, setActivePanel] = useState<(typeof panels)[number]["id"]>("upload");
   const [locations, setLocations] = useState<LocationPoint[]>(sampleLocations);
   const [vehicles, setVehicles] = useState<Vehicle[]>(sampleVehicles);
   const [orders, setOrders] = useState<Order[]>(sampleOrders);
@@ -280,7 +273,7 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
   const [scenarioName, setScenarioName] = useState("morning-wave");
-  const [showGuide, setShowGuide] = useState(true);
+  const [showGuide, setShowGuide] = useState(false);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const totalDemand = useMemo(
@@ -361,7 +354,7 @@ export default function Home() {
       setComparison((current) => [fallback, ...current.filter((item) => item.scenarioId !== fallback.scenarioId)].slice(0, 4));
     } finally {
       setIsRunning(false);
-      setActivePanel("adjust");
+      setActivePanel("run");
     }
   };
 
@@ -539,16 +532,11 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Badge variant={optimizerState === "ready" ? "success" : "muted"}>{statusLabel(optimizerState)}</Badge>
           <Button variant="outline" size="sm" onClick={() => setShowGuide(true)}>
             <CircleHelp className="h-4 w-4" />
             วิธีใช้
           </Button>
-          <div className="grid grid-cols-4 gap-2">
-            <Metric label="ตัวคำนวณ" value={statusLabel(optimizerState)} />
-            <Metric label="สาขา" value={locations.filter((location) => location.type === "store").length.toString()} />
-            <Metric label="รถ" value={vehicles.length.toString()} />
-            <Metric label="น้ำหนัก" value={`${Math.round(totalDemand.kg)} กก.`} />
-          </div>
         </div>
       </header>
 
@@ -556,22 +544,14 @@ export default function Home() {
         <aside className="overflow-y-auto border-b bg-white/85 p-4 backdrop-blur lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
             <div className="mb-4 rounded-lg border bg-white p-3 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold">เริ่มใช้งานเร็ว</p>
-                  <p className="text-xs text-muted-foreground">ทำตาม 3 ขั้นตอนนี้ก่อน แล้วค่อยปรับละเอียด</p>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">ทำงาน 3 ขั้นตอน</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">ใส่พิกัดจริง สร้างรถ/ออเดอร์จำลอง แล้วกดคำนวณ ผลลัพธ์อยู่ด้านขวาเสมอ</p>
                 </div>
-                <Badge variant="muted">ทดลอง</Badge>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {["พิกัดจริง", "รถ + ออเดอร์", "คำนวณ"].map((step, index) => (
-                  <div key={step} className="rounded-md bg-secondary px-2.5 py-2">
-                    <div className="mb-1 grid h-5 w-5 place-items-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
-                      {index + 1}
-                    </div>
-                    <p className="text-xs font-medium leading-snug">{step}</p>
-                  </div>
-                ))}
+                <Button variant="ghost" size="sm" onClick={() => setShowGuide(true)}>
+                  วิธีใช้
+                </Button>
               </div>
             </div>
 
@@ -754,13 +734,10 @@ export default function Home() {
         </aside>
 
         <section className="relative min-h-0 overflow-hidden">
-          <div className="pointer-events-none absolute left-4 top-4 z-10 max-w-[320px] rounded-lg border bg-white/92 p-3 shadow-[0_18px_42px_rgba(15,23,42,0.14)] backdrop-blur">
-            <div className="mb-1 flex items-center gap-2">
-              <Badge variant="success">แผนที่จริง</Badge>
-              <span className="text-xs font-medium text-muted-foreground">CARTO Voyager</span>
-            </div>
-            <p className="text-sm font-semibold">ลากหมุดบนแผนที่เพื่อปรับพิกัดสาขา</p>
-            <p className="text-xs text-muted-foreground">เส้นสีคือแผนรถแต่ละคัน ส่วนข้อมูลรถและออเดอร์เป็นข้อมูลจำลอง</p>
+          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-lg border bg-white/92 px-3 py-2 shadow-[0_18px_42px_rgba(15,23,42,0.14)] backdrop-blur">
+            <p className="text-xs font-medium">
+              แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
+            </p>
           </div>
           <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
@@ -831,15 +808,6 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     <div className="space-y-1.5">
       <Label>{label}</Label>
       {children}
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-20 rounded-lg border bg-slate-50 px-3 py-2 shadow-sm">
-      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold">{value}</div>
     </div>
   );
 }
