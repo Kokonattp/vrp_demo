@@ -58,6 +58,19 @@ Render can use `backend/render.yaml`, or configure manually:
 - Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - Environment Variable: `FRONTEND_ORIGINS=https://your-vercel-app.vercel.app`
 
+### Zeabur Backend
+
+Create a Zeabur service from the GitHub repo:
+
+- Root Directory: `backend`
+- Build Command: `pip install -r requirements.txt`
+- Start Command: `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}`
+- Environment Variables:
+  - `OSRM_BASE_URL=https://router.project-osrm.org`
+  - `FRONTEND_ORIGINS=https://your-vercel-app.vercel.app`
+
+`backend/zbpack.json` includes the same commands so Zeabur can auto-configure the Python service.
+
 ## Routing API
 
 The backend can use real travel distance/time from an OSRM-compatible routing API.
