@@ -584,7 +584,7 @@ async def build_solution_result(
             if order:
                 load_kg += order.weightKg
                 load_cbm += order.cbm
-                if arrival > time_to_minutes(order.timeWindowEnd):
+                if is_fixed_order(order) and arrival > time_to_minutes(order.timeWindowEnd):
                     stop_warnings.append("Time window")
                     warnings.append(f"{order.id} misses {order.timeWindowEnd}")
             stops.append(
