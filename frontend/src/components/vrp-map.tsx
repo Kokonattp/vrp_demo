@@ -1,7 +1,7 @@
 "use client";
 
 import maplibregl, { LngLatBoundsLike, Map as MapLibreMap } from "maplibre-gl";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Coordinate, LocationPoint, Order, RoutePlan } from "@/types/vrp";
 
 const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -44,6 +44,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
+  const [mapReady, setMapReady] = useState(false);
 
   const bounds = useMemo(() => {
     if (!locations.length) return undefined;
@@ -142,31 +143,36 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    mapRef.current = new maplibregl.Map({
+    const map = new maplibregl.Map({
       container: containerRef.current,
       style: mapStyle,
       center: [100.5018, 13.7563],
       zoom: 11,
       attributionControl: false
     });
-    mapRef.current.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
-    mapRef.current.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    mapRef.current = map;
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    map.once("load", () => setMapReady(true));
 
     return () => {
-      mapRef.current?.remove();
+      Object.values(markerRef.current).forEach((marker) => marker.remove());
+      markerRef.current = {};
+      map.remove();
       mapRef.current = null;
+      setMapReady(false);
     };
   }, []);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !bounds) return;
+    if (!map || !bounds || !mapReady) return;
     map.fitBounds(bounds as LngLatBoundsLike, { padding: 72, duration: 600, maxZoom: 13 });
-  }, [bounds]);
+  }, [bounds, mapReady]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    if (!map || !mapReady) return;
 
     Object.entries(markerRef.current).forEach(([id, marker]) => {
       if (!locations.some((location) => location.id === id)) {
@@ -229,12 +235,16 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         `</div>`
       ].join("");
       const markerElement = document.createElement("div");
-      markerElement.className = [
-        "grid h-8 w-8 place-items-center rounded-full border-[3px] border-white text-[11px] font-bold text-white shadow-[0_8px_18px_rgba(15,23,42,0.12)]",
-        selectedLocationId === location.id ? "ring-4 ring-blue-500/20" : ""
-      ].join(" ");
+      markerElement.className = ["vrp-marker", location.type === "depot" ? "vrp-marker--depot" : "vrp-marker--store", selectedLocationId === location.id ? "vrp-marker--selected" : ""]
+        .filter(Boolean)
+        .join(" ");
       markerElement.style.backgroundColor = markerColor;
+      markerElement.style.setProperty("--marker-color", markerColor);
       markerElement.textContent = markerLabel;
+      markerElement.setAttribute(
+        "aria-label",
+        `${location.name} ${location.type === "depot" ? "depot" : `stop ${markerLabel}`}`
+      );
       markerElement.onclick = () => onLocationSelect?.(location.id);
 
       const existing = markerRef.current[location.id];
@@ -243,12 +253,14 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         existing.setPopup(new maplibregl.Popup().setHTML(popupHtml));
         existing.getElement().className = markerElement.className;
         existing.getElement().style.backgroundColor = markerColor;
+        existing.getElement().style.setProperty("--marker-color", markerColor);
         existing.getElement().textContent = markerElement.textContent;
+        existing.getElement().setAttribute("aria-label", markerElement.getAttribute("aria-label") ?? location.name);
         existing.getElement().onclick = () => onLocationSelect?.(location.id);
         return;
       }
 
-      const marker = new maplibregl.Marker({ element: markerElement, draggable: true })
+      const marker = new maplibregl.Marker({ element: markerElement, draggable: true, anchor: "center" })
         .setLngLat([location.lng, location.lat])
         .setPopup(new maplibregl.Popup().setHTML(popupHtml))
         .addTo(map);
@@ -260,11 +272,11 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
 
       markerRef.current[location.id] = marker;
     });
-  }, [locations, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+  }, [locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    if (!map || !mapReady) return;
 
     const renderRoutes = () => {
       routes.forEach((route) => {
@@ -342,7 +354,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
     } else {
       map.once("load", renderRoutes);
     }
-  }, [routes]);
+  }, [mapReady, routes]);
 
   return <div ref={containerRef} className="h-full min-h-0 w-full overflow-hidden bg-muted" />;
 }

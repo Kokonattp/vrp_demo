@@ -99,6 +99,50 @@
 
 .maplibregl-marker {
   cursor: grab;
+  z-index: 20;
+}
+
+.vrp-marker {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 3px solid #ffffff;
+  border-radius: 9999px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--marker-color, #1b2e4b) 18%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.2);
+  transform: translateZ(0);
+}
+
+.vrp-marker--depot {
+  width: 36px;
+  height: 36px;
+}
+
+.vrp-marker--store::after {
+  position: absolute;
+  right: -2px;
+  bottom: -4px;
+  width: 10px;
+  height: 10px;
+  border-right: 3px solid #ffffff;
+  border-bottom: 3px solid #ffffff;
+  background: var(--marker-color, #ef4444);
+  content: "";
+  transform: rotate(45deg);
+}
+
+.vrp-marker--selected {
+  box-shadow:
+    0 0 0 5px rgba(59, 130, 246, 0.24),
+    0 0 0 9px color-mix(in srgb, var(--marker-color, #1b2e4b) 16%, transparent),
+    0 14px 28px rgba(15, 23, 42, 0.24);
 }
 
 .maplibregl-ctrl-group {
