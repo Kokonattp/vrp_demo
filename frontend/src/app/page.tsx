@@ -6,6 +6,7 @@ import {
   Boxes,
   CircleHelp,
   Clock3,
+  Download,
   FileUp,
   Play,
   Plus,
@@ -29,6 +30,12 @@ import type { Coordinate, LocationPoint, OptimizeRequest, Order, RoutePlan, Rout
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
 const API_URL = "";
+const branchCsvTemplate = [
+  "id,name,lat,lng,address,demandKg,cbm,serviceMinutes,timeWindowStart,timeWindowEnd,priority",
+  "depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร,,,,,,",
+  "store-silom,สาขาสีลม,13.7246,100.5347,สีลม,180,1.2,18,09:00,11:30,high",
+  "store-ari,สาขาอารีย์,13.7801,100.5446,พญาไท,240,1.6,20,10:00,14:30,normal"
+].join("\n");
 
 const panels = [
   { id: "upload", label: "พิกัดสาขา", icon: FileUp },
@@ -239,15 +246,27 @@ function buildLocalFallback(
   };
 }
 
-function parseLocationsCsv(csv: string): LocationPoint[] {
-  return csv
+function parseNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Order[] } {
+  const rows = csv
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      const [id, name, lat, lng, address] = line.split(",").map((cell) => cell.trim());
-      const type: LocationPoint["type"] = index === 0 && (id || "").toLowerCase().includes("depot") ? "depot" : "store";
-      return {
+    .filter(Boolean);
+  const hasHeader = rows[0]?.toLowerCase().startsWith("id,");
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const locations: LocationPoint[] = [];
+  const orders: Order[] = [];
+
+  dataRows.forEach((line, index) => {
+    const [id, name, lat, lng, address, demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority] = line
+      .split(",")
+      .map((cell) => cell.trim());
+    const type: LocationPoint["type"] = index === 0 && (id || "").toLowerCase().includes("depot") ? "depot" : "store";
+    const location: LocationPoint = {
         id: id || `store-${index + 1}`,
         name: name || `สาขา ${index + 1}`,
         type,
@@ -255,8 +274,24 @@ function parseLocationsCsv(csv: string): LocationPoint[] {
         lng: Number(lng),
         address
       };
-    })
-    .filter((location) => Number.isFinite(location.lat) && Number.isFinite(location.lng));
+    if (!Number.isFinite(location.lat) || !Number.isFinite(location.lng)) return;
+    locations.push(location);
+
+    if (type === "store") {
+      orders.push({
+        id: `ord-${location.id.replace(/[^a-zA-Z0-9-]/g, "-")}`,
+        locationId: location.id,
+        weightKg: parseNumber(demandKg, 120),
+        cbm: parseNumber(cbm, 1),
+        serviceMinutes: parseNumber(serviceMinutes, 15),
+        timeWindowStart: timeWindowStart || "09:00",
+        timeWindowEnd: timeWindowEnd || "17:00",
+        priority: priority === "high" ? "high" : "normal"
+      });
+    }
+  });
+
+  return { locations, orders };
 }
 
 function emptyScenarioResult(scenarioId: string): ScenarioResult {
@@ -279,7 +314,7 @@ export default function Home() {
   const [orders, setOrders] = useState<Order[]>(sampleOrders);
   const [result, setResult] = useState<ScenarioResult>(() => emptyScenarioResult("baseline"));
   const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
-  const [csvText, setCsvText] = useState("depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร\nstore-new,สาขาใหม่,13.7440,100.5620,สุขุมวิท");
+  const [csvText, setCsvText] = useState(branchCsvTemplate);
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
@@ -416,13 +451,25 @@ export default function Home() {
   };
 
   const importCsv = () => {
-    const parsed = parseLocationsCsv(csvText);
-    if (!parsed.length) return;
-    const hasDepot = parsed.some((location) => location.type === "depot");
-    setLocations(hasDepot ? parsed : [{ ...parsed[0], type: "depot" }, ...parsed.slice(1)]);
-    setSelectedLocationId(parsed[0].id);
+    const parsed = parseBranchCsv(csvText);
+    if (!parsed.locations.length) return;
+    const hasDepot = parsed.locations.some((location) => location.type === "depot");
+    const nextLocations = hasDepot ? parsed.locations : [{ ...parsed.locations[0], type: "depot" as const }, ...parsed.locations.slice(1)];
+    setLocations(nextLocations);
+    setOrders(parsed.orders);
+    setSelectedLocationId(nextLocations[0].id);
     setResult(emptyScenarioResult(scenarioName || "draft"));
     setHasCalculatedRoute(false);
+  };
+
+  const downloadCsvTemplate = () => {
+    const blob = new Blob([branchCsvTemplate], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "vrp-branch-template.csv";
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const importCsvFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -640,9 +687,13 @@ export default function Home() {
               <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>นำเข้าพิกัดสาขา</CardTitle>
-                  <CardDescription>id, ชื่อ, lat, lng, ที่อยู่</CardDescription>
+                  <CardDescription>id, name, lat, lng, address, demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  <Button variant="outline" className="w-full" onClick={downloadCsvTemplate}>
+                    <Download className="h-4 w-4" />
+                    ดาวน์โหลด template CSV
+                  </Button>
                   <Input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
                   <Textarea value={csvText} onChange={(event) => setCsvText(event.target.value)} />
                   <Button className="w-full" onClick={importCsv}>
@@ -763,7 +814,7 @@ export default function Home() {
               แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
             </p>
           </div>
-          <VrpMap locations={locations} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
+          <VrpMap locations={locations} orders={orders} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
         </section>
 
         <aside className="overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:border-l lg:border-t-0">

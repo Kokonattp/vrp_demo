@@ -52,10 +52,49 @@
 }
 
 .maplibregl-popup-content {
-  border: 1px solid #f1f5f9;
+  border: 1px solid #e2e8f0;
   border-radius: 14px;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
-  padding: 10px 12px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
+  padding: 14px 16px 12px;
+}
+
+.maplibregl-popup-close-button {
+  right: 8px;
+  top: 8px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 9999px;
+  color: #64748b;
+  font-size: 16px;
+  line-height: 1;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.maplibregl-popup-close-button:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.vrp-map-popup {
+  display: grid;
+  min-width: 180px;
+  max-width: 260px;
+  gap: 4px;
+  padding-right: 18px;
+  color: #334155;
+  font-family: "Prompt", "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vrp-map-popup strong {
+  color: #1b2e4b;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .maplibregl-marker {

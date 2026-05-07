@@ -1,8 +1,8 @@
 "use client";
 
-import maplibregl, { LngLatBoundsLike, Map } from "maplibre-gl";
+import maplibregl, { LngLatBoundsLike, Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useRef } from "react";
-import type { Coordinate, LocationPoint, RoutePlan } from "@/types/vrp";
+import type { Coordinate, LocationPoint, Order, RoutePlan } from "@/types/vrp";
 
 const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const routeLineColor = "#1B2E4B";
@@ -11,6 +11,7 @@ const storeMarkerColor = "#EF4444";
 
 type VrpMapProps = {
   locations: LocationPoint[];
+  orders: Order[];
   routes: RoutePlan[];
   selectedLocationId?: string;
   onLocationMove: (id: string, coordinate: Coordinate) => void;
@@ -38,9 +39,9 @@ function minutesToTime(value: number) {
   return `${hours}:${minutes}`;
 }
 
-export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }: VrpMapProps) {
+export function VrpMap({ locations, orders, routes, selectedLocationId, onLocationMove }: VrpMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<Map | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
 
   const bounds = useMemo(() => {
@@ -95,6 +96,43 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     return stopsByLocation;
   }, [routes]);
 
+  const orderSummaryByLocationId = useMemo(() => {
+    const summaryByLocation = new Map<
+      string,
+      {
+        count: number;
+        weightKg: number;
+        cbm: number;
+        serviceMinutes: number;
+        timeWindows: string[];
+        priorities: Set<Order["priority"]>;
+      }
+    >();
+
+    orders.forEach((order) => {
+      const existing = summaryByLocation.get(order.locationId);
+      if (existing) {
+        existing.count += 1;
+        existing.weightKg += order.weightKg;
+        existing.cbm += order.cbm;
+        existing.serviceMinutes += order.serviceMinutes;
+        existing.timeWindows.push(`${order.timeWindowStart}-${order.timeWindowEnd}`);
+        existing.priorities.add(order.priority);
+        return;
+      }
+      summaryByLocation.set(order.locationId, {
+        count: 1,
+        weightKg: order.weightKg,
+        cbm: order.cbm,
+        serviceMinutes: order.serviceMinutes,
+        timeWindows: [`${order.timeWindowStart}-${order.timeWindowEnd}`],
+        priorities: new Set([order.priority])
+      });
+    });
+
+    return summaryByLocation;
+  }, [orders]);
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     mapRef.current = new maplibregl.Map({
@@ -132,6 +170,7 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
 
     locations.forEach((location, index) => {
       const routeStop = routeStopByLocationId.get(location.id);
+      const orderSummary = orderSummaryByLocationId.get(location.id);
       const fallbackSequence = locations.slice(0, index + 1).filter((item) => item.type === "store").length;
       const markerLabel = location.type === "depot" ? "D" : String(routeStop?.sequence ?? fallbackSequence);
       const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? storeMarkerColor;
@@ -147,15 +186,32 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
       const arrivalText = routeStop ? `<br/><span>ถึงประมาณ: ${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
       const loadText = routeStop ? `<br/><span>โหลด: ${Math.round(routeStop.loadKg)} กก., ${routeStop.loadCbm.toFixed(1)} CBM</span>` : "";
       const warningText = routeStop?.warnings.length ? `<br/><span>เตือน: ${escapeHtml(routeStop.warnings.join(", "))}</span>` : "";
+      const addressText = location.address ? `<span>${escapeHtml(location.address)}</span>` : "<span>ไม่ได้ระบุที่อยู่</span>";
+      const orderSummaryText = orderSummary
+        ? `<span>งานส่ง: ${orderSummary.count} ออเดอร์ · ${Math.round(orderSummary.weightKg)} กก. · ${orderSummary.cbm.toFixed(1)} CBM</span>`
+        : "";
+      const serviceText = orderSummary
+        ? `<span>เวลาบริการ: ${orderSummary.serviceMinutes} นาที · ช่วงส่ง: ${escapeHtml(Array.from(new Set(orderSummary.timeWindows)).join(", "))}</span>`
+        : "";
+      const priorityText = orderSummary
+        ? `<span>ระดับ: ${orderSummary.priorities.has("high") ? "ด่วน" : "ปกติ"}</span>`
+        : "";
       const popupHtml = [
+        `<div class="vrp-map-popup">`,
         `<strong>${escapeHtml(location.name)}</strong>`,
-        `<br/><span>${locationType} · ${sequenceText}</span>`,
-        routeText,
-        orderText,
-        arrivalText,
-        loadText,
-        warningText,
-        `<br/><span>พิกัด: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}</span>`
+        `<span>${locationType} · ${sequenceText}</span>`,
+        `<span>รหัส: ${escapeHtml(location.id)}</span>`,
+        addressText,
+        orderSummaryText,
+        serviceText,
+        priorityText,
+        routeText.replace("<br/>", ""),
+        orderText.replace("<br/>", ""),
+        arrivalText.replace("<br/>", ""),
+        loadText.replace("<br/>", ""),
+        warningText.replace("<br/>", ""),
+        `<span>พิกัด: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}</span>`,
+        `</div>`
       ].join("");
       const markerElement = document.createElement("div");
       markerElement.className = [
@@ -187,7 +243,7 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
 
       markerRef.current[location.id] = marker;
     });
-  }, [locations, onLocationMove, routeStopByLocationId, selectedLocationId]);
+  }, [locations, onLocationMove, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
