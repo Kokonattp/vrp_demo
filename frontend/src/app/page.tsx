@@ -30,12 +30,28 @@ import type { Coordinate, LocationPoint, OptimizeRequest, Order, RoutePlan, Rout
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
 const API_URL = "";
-const branchCsvTemplate = [
-  "id,name,lat,lng,address,demandKg,cbm,serviceMinutes,timeWindowStart,timeWindowEnd,priority",
-  "depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร,,,,,,",
-  "store-silom,สาขาสีลม,13.7246,100.5347,สีลม,180,1.2,18,09:00,11:30,high",
-  "store-ari,สาขาอารีย์,13.7801,100.5446,พญาไท,240,1.6,20,10:00,14:30,normal"
-].join("\n");
+
+function todayDate() {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function addDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function buildBranchCsvTemplate(baseDate: string) {
+  return [
+    "id,name,lat,lng,address,serviceDate,demandKg,cbm,serviceMinutes,timeWindowStart,timeWindowEnd,priority",
+    `depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร,${baseDate},,,,,,`,
+    `store-silom,สาขาสีลม,13.7246,100.5347,สีลม,${baseDate},180,1.2,18,09:00,11:30,high`,
+    `store-silom,สาขาสีลม,13.7246,100.5347,สีลม,${addDays(baseDate, 1)},260,1.8,22,10:00,15:00,normal`,
+    `store-ari,สาขาอารีย์,13.7801,100.5446,พญาไท,${baseDate},240,1.6,20,10:00,14:30,normal`
+  ].join("\n");
+}
 
 const panels = [
   { id: "upload", label: "พิกัดสาขา", icon: FileUp },
@@ -262,9 +278,15 @@ function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Orde
   const orders: Order[] = [];
 
   dataRows.forEach((line, index) => {
-    const [id, name, lat, lng, address, demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority] = line
+    const cells = line
       .split(",")
       .map((cell) => cell.trim());
+    const [id, name, lat, lng, address] = cells;
+    const hasServiceDate = /^\d{4}-\d{2}-\d{2}$/.test(cells[5] ?? "");
+    const serviceDate = hasServiceDate ? cells[5] : todayDate();
+    const [demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority] = hasServiceDate
+      ? cells.slice(6, 12)
+      : cells.slice(5, 11);
     const type: LocationPoint["type"] = index === 0 && (id || "").toLowerCase().includes("depot") ? "depot" : "store";
     const location: LocationPoint = {
         id: id || `store-${index + 1}`,
@@ -273,14 +295,20 @@ function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Orde
         lat: Number(lat),
         lng: Number(lng),
         address
-      };
+    };
     if (!Number.isFinite(location.lat) || !Number.isFinite(location.lng)) return;
-    locations.push(location);
+    const existingLocation = locations.find((item) => item.id === location.id);
+    if (existingLocation) {
+      Object.assign(existingLocation, location);
+    } else {
+      locations.push(location);
+    }
 
     if (type === "store") {
       orders.push({
-        id: `ord-${location.id.replace(/[^a-zA-Z0-9-]/g, "-")}`,
+        id: `ord-${serviceDate}-${location.id.replace(/[^a-zA-Z0-9-]/g, "-")}`,
         locationId: location.id,
+        serviceDate,
         weightKg: parseNumber(demandKg, 120),
         cbm: parseNumber(cbm, 1),
         serviceMinutes: parseNumber(serviceMinutes, 15),
@@ -314,7 +342,9 @@ export default function Home() {
   const [orders, setOrders] = useState<Order[]>(sampleOrders);
   const [result, setResult] = useState<ScenarioResult>(() => emptyScenarioResult("baseline"));
   const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
-  const [csvText, setCsvText] = useState(branchCsvTemplate);
+  const [planningDate, setPlanningDate] = useState(() => todayDate());
+  const csvTemplate = useMemo(() => buildBranchCsvTemplate(planningDate), [planningDate]);
+  const [csvText, setCsvText] = useState(() => buildBranchCsvTemplate(todayDate()));
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
@@ -323,16 +353,20 @@ export default function Home() {
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
+  const dailyOrders = useMemo(
+    () => orders.filter((order) => order.serviceDate === planningDate),
+    [orders, planningDate]
+  );
   const totalDemand = useMemo(
     () =>
-      orders.reduce(
+      dailyOrders.reduce(
         (sum, order) => ({
           kg: sum.kg + order.weightKg,
           cbm: sum.cbm + order.cbm
         }),
         { kg: 0, cbm: 0 }
       ),
-    [orders]
+    [dailyOrders]
   );
   const totalCapacity = useMemo(
     () =>
@@ -354,8 +388,8 @@ export default function Home() {
     [locations, selectedLocationId]
   );
   const selectedBranchOrder = useMemo(
-    () => orders.find((order) => order.locationId === selectedLocation?.id),
-    [orders, selectedLocation?.id]
+    () => orders.find((order) => order.locationId === selectedLocation?.id && order.serviceDate === planningDate),
+    [orders, planningDate, selectedLocation?.id]
   );
 
   useEffect(() => {
@@ -390,7 +424,7 @@ export default function Home() {
       depotId: depot.id,
       locations,
       vehicles,
-      orders
+      orders: dailyOrders
     };
 
     try {
@@ -417,7 +451,7 @@ export default function Home() {
         setActivePanel("run");
       }
     }
-  }, [depot, locations, orders, scenarioName, vehicles]);
+  }, [dailyOrders, depot, locations, scenarioName, vehicles]);
 
   const addVehicle = () => {
     if (!depot) return;
@@ -448,6 +482,7 @@ export default function Home() {
       {
         id: `ord-${1000 + current.length + 1}`,
         locationId: store.id,
+        serviceDate: planningDate,
         weightKg: 120,
         cbm: 1,
         serviceMinutes: 15,
@@ -471,7 +506,7 @@ export default function Home() {
   };
 
   const downloadCsvTemplate = () => {
-    const blob = new Blob([branchCsvTemplate], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([csvTemplate], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -498,8 +533,9 @@ export default function Home() {
       address: ""
     };
     const nextOrder: Order = {
-      id: `ord-${nextLocation.id}`,
+      id: `ord-${planningDate}-${nextLocation.id}`,
       locationId: nextLocation.id,
+      serviceDate: planningDate,
       weightKg: 120,
       cbm: 1,
       serviceMinutes: 15,
@@ -524,8 +560,9 @@ export default function Home() {
   const updateSelectedBranchOrder = (patch: Partial<Order>) => {
     if (!selectedLocation || selectedLocation.type === "depot") return;
     const baseOrder: Order = selectedBranchOrder ?? {
-      id: `ord-${selectedLocation.id}`,
+      id: `ord-${planningDate}-${selectedLocation.id}`,
       locationId: selectedLocation.id,
+      serviceDate: planningDate,
       weightKg: 120,
       cbm: 1,
       serviceMinutes: 15,
@@ -714,12 +751,23 @@ export default function Home() {
                   <CardDescription>{scenarioName}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  <Field label="วันที่วางแผน">
+                    <Input
+                      type="date"
+                      value={planningDate}
+                      onChange={(event) => {
+                        setPlanningDate(event.target.value);
+                        setResult(emptyScenarioResult(scenarioName || "draft"));
+                        setHasCalculatedRoute(false);
+                      }}
+                    />
+                  </Field>
                   <Field label="ชื่อสถานการณ์">
                     <Input value={scenarioName} onChange={(event) => setScenarioName(event.target.value)} />
                   </Field>
                   <div className="grid grid-cols-2 gap-2">
                     <ScenarioStat icon={Boxes} label="CBM" value={`${totalDemand.cbm.toFixed(1)} / ${totalCapacity.cbm.toFixed(1)}`} />
-                    <ScenarioStat icon={Clock3} label="เวลาบริการ" value={`${orders.reduce((sum, order) => sum + order.serviceMinutes, 0)} นาที`} />
+                    <ScenarioStat icon={Clock3} label="เวลาบริการ" value={`${dailyOrders.reduce((sum, order) => sum + order.serviceMinutes, 0)} นาที`} />
                   </div>
                   <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
                     {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
@@ -752,15 +800,29 @@ export default function Home() {
               <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>นำเข้าพิกัดสาขา</CardTitle>
-                  <CardDescription>id, name, lat, lng, address, demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority</CardDescription>
+                  <CardDescription>id, name, lat, lng, address, serviceDate, demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  <Field label="วันที่วางแผน">
+                    <Input
+                      type="date"
+                      value={planningDate}
+                      onChange={(event) => {
+                        setPlanningDate(event.target.value);
+                        setResult(emptyScenarioResult(scenarioName || "draft"));
+                        setHasCalculatedRoute(false);
+                      }}
+                    />
+                  </Field>
                   <Button variant="outline" className="w-full" onClick={downloadCsvTemplate}>
                     <Download className="h-4 w-4" />
                     ดาวน์โหลด template CSV
                   </Button>
                   <Input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
                   <Textarea value={csvText} onChange={(event) => setCsvText(event.target.value)} />
+                  <Button variant="outline" className="w-full" onClick={() => setCsvText(csvTemplate)}>
+                    ใช้ template ของวันที่เลือก
+                  </Button>
                   <Button className="w-full" onClick={importCsv}>
                     <Upload className="h-4 w-4" />
                     นำเข้าพิกัด
@@ -774,6 +836,7 @@ export default function Home() {
                     <div>
                       <CardTitle>ตัวแปรสาขา</CardTitle>
                       <CardDescription>ใช้คำนวณ VRP: พิกัด, น้ำหนัก, CBM, เวลาบริการ, ช่วงเวลาส่ง, ความด่วน</CardDescription>
+                      <CardDescription>ข้อมูลด้านล่างเป็นค่าของวันที่ {planningDate}</CardDescription>
                     </div>
                     <Button variant="outline" size="sm" onClick={addBranch}>
                       <Plus className="h-4 w-4" />
@@ -886,7 +949,7 @@ export default function Home() {
               <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>คำนวณ VRP</CardTitle>
-                  <CardDescription>{orders.length} ออเดอร์จำลอง</CardDescription>
+                  <CardDescription>{dailyOrders.length} ออเดอร์ของวันที่ {planningDate}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Button variant="outline" className="w-full" onClick={addOrder}>
@@ -894,7 +957,7 @@ export default function Home() {
                     เพิ่มออเดอร์จำลอง
                   </Button>
                   <div className="space-y-2">
-                    {orders.map((order) => (
+                    {dailyOrders.map((order) => (
                       <OrderRow
                         key={order.id}
                         order={order}
@@ -979,7 +1042,7 @@ export default function Home() {
           </div>
           <VrpMap
             locations={locations}
-            orders={orders}
+            orders={dailyOrders}
             routes={result.routes}
             selectedLocationId={selectedLocationId}
             onLocationSelect={setSelectedLocationId}

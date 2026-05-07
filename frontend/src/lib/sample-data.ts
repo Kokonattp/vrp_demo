@@ -1,5 +1,11 @@
 import type { LocationPoint, Order, ScenarioResult, Vehicle } from "@/types/vrp";
 
+const sampleServiceDate = (() => {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+})();
+
 export const routeColors = ["#1B2E4B", "#3B82F6", "#10B981", "#7C3AED", "#EF4444"];
 
 export const sampleLocations: LocationPoint[] = [
@@ -75,6 +81,7 @@ export const sampleOrders: Order[] = [
   {
     id: "ord-1001",
     locationId: "store-silom",
+    serviceDate: sampleServiceDate,
     weightKg: 180,
     cbm: 1.2,
     serviceMinutes: 18,
@@ -85,6 +92,7 @@ export const sampleOrders: Order[] = [
   {
     id: "ord-1002",
     locationId: "store-ari",
+    serviceDate: sampleServiceDate,
     weightKg: 240,
     cbm: 1.6,
     serviceMinutes: 20,
@@ -95,6 +103,7 @@ export const sampleOrders: Order[] = [
   {
     id: "ord-1003",
     locationId: "store-thonglor",
+    serviceDate: sampleServiceDate,
     weightKg: 320,
     cbm: 2.4,
     serviceMinutes: 25,
@@ -105,6 +114,7 @@ export const sampleOrders: Order[] = [
   {
     id: "ord-1004",
     locationId: "store-rama9",
+    serviceDate: sampleServiceDate,
     weightKg: 210,
     cbm: 1.3,
     serviceMinutes: 16,
@@ -115,6 +125,7 @@ export const sampleOrders: Order[] = [
   {
     id: "ord-1005",
     locationId: "store-bangna",
+    serviceDate: sampleServiceDate,
     weightKg: 520,
     cbm: 3.1,
     serviceMinutes: 30,

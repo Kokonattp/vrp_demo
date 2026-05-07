@@ -49,6 +49,7 @@ class Vehicle(BaseModel):
 class Order(BaseModel):
     id: str
     locationId: str
+    serviceDate: str | None = None
     weightKg: float
     cbm: float
     serviceMinutes: int

@@ -105,6 +105,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         weightKg: number;
         cbm: number;
         serviceMinutes: number;
+        serviceDates: string[];
         timeWindows: string[];
         priorities: Set<Order["priority"]>;
       }
@@ -117,6 +118,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         existing.weightKg += order.weightKg;
         existing.cbm += order.cbm;
         existing.serviceMinutes += order.serviceMinutes;
+        existing.serviceDates.push(order.serviceDate);
         existing.timeWindows.push(`${order.timeWindowStart}-${order.timeWindowEnd}`);
         existing.priorities.add(order.priority);
         return;
@@ -126,6 +128,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         weightKg: order.weightKg,
         cbm: order.cbm,
         serviceMinutes: order.serviceMinutes,
+        serviceDates: [order.serviceDate],
         timeWindows: [`${order.timeWindowStart}-${order.timeWindowEnd}`],
         priorities: new Set([order.priority])
       });
@@ -191,6 +194,9 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
       const orderSummaryText = orderSummary
         ? `<span>ปริมาณงาน: ${orderSummary.count} ออเดอร์ · ${Math.round(orderSummary.weightKg)} กก. · ${orderSummary.cbm.toFixed(1)} CBM</span>`
         : "";
+      const serviceDateText = orderSummary
+        ? `<span>วันที่งานส่ง: ${escapeHtml(Array.from(new Set(orderSummary.serviceDates)).join(", "))}</span>`
+        : "";
       const serviceText = orderSummary
         ? `<span>เวลาบริการ: ${orderSummary.serviceMinutes} นาที · ช่วงส่ง: ${escapeHtml(Array.from(new Set(orderSummary.timeWindows)).join(", "))}</span>`
         : "";
@@ -203,6 +209,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         `<span>${locationType} · ${sequenceText}</span>`,
         `<span>รหัส: ${escapeHtml(location.id)}</span>`,
         addressText,
+        serviceDateText,
         orderSummaryText,
         serviceText,
         priorityText,

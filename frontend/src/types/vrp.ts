@@ -24,6 +24,7 @@ export type Vehicle = {
 export type Order = {
   id: string;
   locationId: string;
+  serviceDate: string;
   weightKg: number;
   cbm: number;
   serviceMinutes: number;
