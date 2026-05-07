@@ -94,6 +94,19 @@ $env:GOOGLE_TRAFFIC_BUCKETS="08:00,09:00,10:00,13:00,15:00,17:00"
 
 With Google routing enabled, the optimizer matrix uses traffic-aware travel duration, and map route lines use Google road polylines. Fixed-time stops use the traffic bucket closest to their time window; flexible stops can use the best bucket and are encouraged to cluster before/after nearby fixed-time anchors. If Google routing is unavailable, the backend falls back to OSRM when configured, then to a haversine travel-time simulation so the studio remains usable offline.
 
+## Cost Model
+
+The optimize request accepts an editable test `costModel`. These values are assumptions for simulation, not accounting data:
+
+- `vehicleFixedCost`: fixed cost per active vehicle
+- `costPerKm`: distance cost
+- `costPerHour`: travel/service time cost
+- `overtimeCostPerHour`: cost after `driverShiftMinutes`
+- `latePenaltyPerStop`: penalty for missed fixed time windows
+- `unassignedPenaltyPerOrder`: penalty for orders that cannot be assigned
+
+The backend uses distance/time costs and active vehicle fixed cost in OR-Tools, then returns `totalCost`, `costBreakdown`, per-route costs, and a Thai run summary explaining what happened in the plan.
+
 ## PostgreSQL
 
 `backend/schema.sql` defines the core tables for scenario persistence. The current app runs in-memory for fast simulation workflows.

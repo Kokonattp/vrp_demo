@@ -72,12 +72,23 @@ class Order(BaseModel):
     priority: Literal["normal", "high"]
 
 
+class CostModel(BaseModel):
+    vehicleFixedCost: float = 1200
+    costPerKm: float = 12
+    costPerHour: float = 180
+    overtimeCostPerHour: float = 250
+    driverShiftMinutes: int = 480
+    latePenaltyPerStop: float = 500
+    unassignedPenaltyPerOrder: float = 2000
+
+
 class OptimizeRequest(BaseModel):
     scenarioId: str
     depotId: str
     locations: list[LocationPoint]
     vehicles: list[Vehicle]
     orders: list[Order]
+    costModel: CostModel = Field(default_factory=CostModel)
 
 
 class RouteStop(BaseModel):
@@ -104,6 +115,12 @@ class RoutePlan(BaseModel):
     loadCbm: float
     warnings: list[str]
     routeNotes: list[str] = Field(default_factory=list)
+    fixedCost: float = 0
+    distanceCost: float = 0
+    timeCost: float = 0
+    overtimeCost: float = 0
+    latePenalty: float = 0
+    totalCost: float = 0
     geometry: list[Coordinate]
 
 
@@ -113,6 +130,9 @@ class ScenarioResult(BaseModel):
     objective: float
     totalDistanceKm: float
     totalDurationMinutes: int
+    totalCost: float = 0
+    costBreakdown: dict[str, float] = Field(default_factory=dict)
+    summary: list[str] = Field(default_factory=list)
     unassignedOrders: list[str]
     warnings: list[str]
     routes: list[RoutePlan]
@@ -168,6 +188,16 @@ async def optimize(request: OptimizeRequest):
             objective=0,
             totalDistanceKm=0,
             totalDurationMinutes=0,
+            totalCost=round(len(request.orders) * request.costModel.unassignedPenaltyPerOrder, 2),
+            costBreakdown={
+                "fixedCost": 0,
+                "distanceCost": 0,
+                "timeCost": 0,
+                "overtimeCost": 0,
+                "latePenalty": 0,
+                "unassignedPenalty": round(len(request.orders) * request.costModel.unassignedPenaltyPerOrder, 2),
+            },
+            summary=["ยังคำนวณไม่ได้ เพราะต้องมีข้อมูลคลัง/สาขา รถ และออเดอร์ก่อนรัน VRP"],
             unassignedOrders=[order.id for order in request.orders],
             warnings=["Locations, vehicles, and orders are required."],
             routes=[],
@@ -190,7 +220,7 @@ async def optimize(request: OptimizeRequest):
     manager = pywrapcp.RoutingIndexManager(len(nodes), len(request.vehicles), [0] * len(request.vehicles), [0] * len(request.vehicles))
     routing = pywrapcp.RoutingModel(manager)
 
-    cost_matrix = build_cost_matrix(distance_matrix, duration_matrix, node_orders)
+    cost_matrix = build_cost_matrix(distance_matrix, duration_matrix, node_orders, request.costModel)
 
     def distance_callback(from_index: int, to_index: int) -> int:
         from_node = manager.IndexToNode(from_index)
@@ -199,6 +229,8 @@ async def optimize(request: OptimizeRequest):
 
     transit_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_index)
+    for vehicle_id in range(len(request.vehicles)):
+        routing.SetFixedCostOfVehicle(max(0, int(request.costModel.vehicleFixedCost * 100)), vehicle_id)
 
     demands_kg = [0] + [int(order.weightKg) for order in request.orders if order.locationId in location_by_id]
     demands_cbm = [0] + [int(order.cbm * 100) for order in request.orders if order.locationId in location_by_id]
@@ -253,7 +285,8 @@ async def optimize(request: OptimizeRequest):
         routing.AddVariableMinimizedByFinalizer(time_dimension.CumulVar(routing.End(vehicle_id)))
 
     for node_index, order in enumerate(node_orders[1:], start=1):
-        penalty = 250_000 if order and order.priority == "high" else 100_000
+        priority_factor = 2.5 if order and order.priority == "high" else 1.0
+        penalty = max(100_000, int(request.costModel.unassignedPenaltyPerOrder * priority_factor * 100))
         routing.AddDisjunction([manager.NodeToIndex(node_index)], penalty)
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
@@ -432,6 +465,7 @@ def build_cost_matrix(
     distance_matrix: list[list[float]],
     duration_matrix: list[list[int]],
     node_orders: list[Order | None],
+    cost_model: CostModel,
 ) -> list[list[int]]:
     nearest_anchor = nearest_fixed_anchor_by_node(distance_matrix, duration_matrix, node_orders)
     size = len(node_orders)
@@ -442,7 +476,13 @@ def build_cost_matrix(
             if origin == destination:
                 costs[origin][destination] = 0
                 continue
-            base_cost = int(distance_matrix[origin][destination] * 1000 + duration_matrix[origin][destination] * 60)
+            variable_cost = (
+                distance_matrix[origin][destination] * max(0, cost_model.costPerKm)
+                + (duration_matrix[origin][destination] / 60) * max(0, cost_model.costPerHour)
+            )
+            if variable_cost <= 0:
+                variable_cost = distance_matrix[origin][destination] * 10 + duration_matrix[origin][destination]
+            base_cost = int(variable_cost * 100)
             origin_order = node_orders[origin]
             destination_order = node_orders[destination]
             cluster_factor = 1.0
@@ -535,6 +575,78 @@ def is_flexible_order(order: Order | None) -> bool:
     return bool(order and order.timeMode == "flexible")
 
 
+def calculate_route_cost(
+    route_distance_km: float,
+    route_duration_minutes: int,
+    late_stop_count: int,
+    cost_model: CostModel,
+) -> dict[str, float]:
+    fixed_cost = max(0, cost_model.vehicleFixedCost)
+    distance_cost = max(0, route_distance_km) * max(0, cost_model.costPerKm)
+    time_cost = (max(0, route_duration_minutes) / 60) * max(0, cost_model.costPerHour)
+    overtime_minutes = max(0, route_duration_minutes - max(0, cost_model.driverShiftMinutes))
+    overtime_cost = (overtime_minutes / 60) * max(0, cost_model.overtimeCostPerHour)
+    late_penalty = max(0, late_stop_count) * max(0, cost_model.latePenaltyPerStop)
+    total_cost = fixed_cost + distance_cost + time_cost + overtime_cost + late_penalty
+    return {
+        "fixedCost": round(fixed_cost, 2),
+        "distanceCost": round(distance_cost, 2),
+        "timeCost": round(time_cost, 2),
+        "overtimeCost": round(overtime_cost, 2),
+        "latePenalty": round(late_penalty, 2),
+        "totalCost": round(total_cost, 2),
+    }
+
+
+def scenario_cost_breakdown(
+    routes: list[RoutePlan],
+    unassigned_count: int,
+    cost_model: CostModel,
+) -> dict[str, float]:
+    unassigned_penalty = max(0, unassigned_count) * max(0, cost_model.unassignedPenaltyPerOrder)
+    return {
+        "fixedCost": round(sum(route.fixedCost for route in routes), 2),
+        "distanceCost": round(sum(route.distanceCost for route in routes), 2),
+        "timeCost": round(sum(route.timeCost for route in routes), 2),
+        "overtimeCost": round(sum(route.overtimeCost for route in routes), 2),
+        "latePenalty": round(sum(route.latePenalty for route in routes), 2),
+        "unassignedPenalty": round(unassigned_penalty, 2),
+        "totalCost": round(sum(route.totalCost for route in routes) + unassigned_penalty, 2),
+    }
+
+
+def format_baht(value: float) -> str:
+    return f"{value:,.0f} บาท"
+
+
+def build_run_summary(
+    status: Literal["optimized", "fallback", "infeasible"],
+    routes: list[RoutePlan],
+    unassigned: list[str],
+    warnings: list[str],
+    cost_breakdown: dict[str, float],
+) -> list[str]:
+    if not routes:
+        return ["ยังไม่มีเส้นทางที่จัดได้จากข้อมูลชุดนี้"]
+
+    delivery_count = sum(1 for route in routes for stop in route.stops if stop.orderId)
+    total_distance = sum(route.distanceKm for route in routes)
+    total_duration = sum(route.durationMinutes for route in routes)
+    summary = [
+        f"ใช้รถ {len(routes)} คัน จัดส่ง {delivery_count} ออเดอร์ ระยะทางรวม {total_distance:.1f} กม. ใช้เวลารวม {total_duration} นาที",
+        f"ต้นทุนจำลองรวม {format_baht(cost_breakdown.get('totalCost', 0))} จากค่ารถประจำทาง ระยะทาง เวลา OT และ penalty",
+    ]
+    if status == "fallback":
+        summary.append("ผลลัพธ์นี้เป็นแผน fallback/ประมาณการ ควรกดรันด้วย backend routing จริงเมื่อต้องการใช้งานจริง")
+    if unassigned:
+        summary.append(f"มีออเดอร์ยังไม่ถูกจัด {len(unassigned)} รายการ และถูกคิด penalty จำลอง {format_baht(cost_breakdown.get('unassignedPenalty', 0))}")
+    if warnings:
+        summary.append(f"มีข้อเตือน {len(warnings)} รายการ เช่น {warnings[0]}")
+    best_route = min(routes, key=lambda route: route.totalCost)
+    summary.append(f"เส้นทางต้นทุนต่ำสุดคือ {best_route.vehicleName} ประมาณ {format_baht(best_route.totalCost)}")
+    return summary
+
+
 async def build_solution_result(
     request: OptimizeRequest,
     nodes: list[LocationPoint],
@@ -611,6 +723,9 @@ async def build_solution_result(
 
         geometry = await build_route_geometry([nodes[node] for node in route_nodes])
         route_notes = route_cluster_notes(route_nodes, nodes, node_orders, distance_matrix, duration_matrix)
+        duration_minutes = route_duration + sum(stop.serviceMinutes for stop in stops)
+        late_stop_count = sum(1 for stop in stops for warning in stop.warnings if warning == "Time window")
+        route_cost = calculate_route_cost(route_distance, duration_minutes, late_stop_count, request.costModel)
         routes.append(
             RoutePlan(
                 vehicleId=vehicle.id,
@@ -618,23 +733,33 @@ async def build_solution_result(
                 color=ROUTE_COLORS[vehicle_index % len(ROUTE_COLORS)],
                 stops=stops,
                 distanceKm=round(route_distance, 1),
-                durationMinutes=route_duration + sum(stop.serviceMinutes for stop in stops),
+                durationMinutes=duration_minutes,
                 loadKg=round(load_kg, 1),
                 loadCbm=round(load_cbm, 1),
                 warnings=warnings,
                 routeNotes=route_notes,
+                fixedCost=route_cost["fixedCost"],
+                distanceCost=route_cost["distanceCost"],
+                timeCost=route_cost["timeCost"],
+                overtimeCost=route_cost["overtimeCost"],
+                latePenalty=route_cost["latePenalty"],
+                totalCost=route_cost["totalCost"],
                 geometry=geometry,
             )
         )
 
     unassigned = [node_orders[index].id for index in range(1, len(nodes)) if index not in visited_nodes and node_orders[index]]
     warnings = [routing_warning] if routing_warning else []
+    cost_breakdown = scenario_cost_breakdown(routes, len(unassigned), request.costModel)
     return ScenarioResult(
         scenarioId=request.scenarioId,
         status="optimized",
-        objective=round(sum(route.distanceKm for route in routes), 1),
+        objective=cost_breakdown["totalCost"],
         totalDistanceKm=round(sum(route.distanceKm for route in routes), 1),
         totalDurationMinutes=sum(route.durationMinutes for route in routes),
+        totalCost=cost_breakdown["totalCost"],
+        costBreakdown=cost_breakdown,
+        summary=build_run_summary("optimized", routes, unassigned, warnings, cost_breakdown),
         unassignedOrders=unassigned,
         warnings=warnings,
         routes=routes,
@@ -714,6 +839,9 @@ def build_greedy_result(
                     warnings=stop_warnings,
                 )
             )
+        duration_minutes = max(0, elapsed - 8 * 60)
+        late_stop_count = sum(1 for stop in stops for warning in stop.warnings if warning == "Time window")
+        route_cost = calculate_route_cost(route_distance, duration_minutes, late_stop_count, request.costModel)
         routes.append(
             RoutePlan(
                 vehicleId=vehicle.id,
@@ -721,22 +849,32 @@ def build_greedy_result(
                 color=ROUTE_COLORS[vehicle_index % len(ROUTE_COLORS)],
                 stops=stops,
                 distanceKm=round(route_distance, 1),
-                durationMinutes=max(0, elapsed - 8 * 60),
+                durationMinutes=duration_minutes,
                 loadKg=round(load_kg, 1),
                 loadCbm=round(load_cbm, 1),
                 warnings=warnings,
                 routeNotes=greedy_route_notes(route_locations, bucket["orders"]),
+                fixedCost=route_cost["fixedCost"],
+                distanceCost=route_cost["distanceCost"],
+                timeCost=route_cost["timeCost"],
+                overtimeCost=route_cost["overtimeCost"],
+                latePenalty=route_cost["latePenalty"],
+                totalCost=route_cost["totalCost"],
                 geometry=[Coordinate(lat=location.lat, lng=location.lng) for location in route_locations],
             )
         )
 
     warnings = [routing_warning or "OR-Tools unavailable; greedy fallback used."]
+    cost_breakdown = scenario_cost_breakdown(routes, len(unassigned), request.costModel)
     return ScenarioResult(
         scenarioId=request.scenarioId,
         status="fallback",
-        objective=round(sum(route.distanceKm for route in routes), 1),
+        objective=cost_breakdown["totalCost"],
         totalDistanceKm=round(sum(route.distanceKm for route in routes), 1),
         totalDurationMinutes=sum(route.durationMinutes for route in routes),
+        totalCost=cost_breakdown["totalCost"],
+        costBreakdown=cost_breakdown,
+        summary=build_run_summary("fallback", routes, unassigned, warnings, cost_breakdown),
         unassignedOrders=unassigned,
         warnings=warnings,
         routes=routes,

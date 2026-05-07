@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import {
   AlertTriangle,
   Boxes,
+  Calculator,
   CircleHelp,
   Clock3,
   Download,
@@ -30,11 +31,21 @@ import { Textarea } from "@/components/ui/textarea";
 import QRCode from "qrcode";
 import { buildDriverRoutePayload, encodeDriverPayload, minutesToClock, type DriverRoutePayload } from "@/lib/driver-payload";
 import { initialScenarioComparison, routeColors, sampleLocations, sampleOrders, sampleVehicles } from "@/lib/sample-data";
-import type { Coordinate, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
+import type { Coordinate, CostModel, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
 
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
 const API_URL = "";
+
+const defaultCostModel: CostModel = {
+  vehicleFixedCost: 1200,
+  costPerKm: 12,
+  costPerHour: 180,
+  overtimeCostPerHour: 250,
+  driverShiftMinutes: 480,
+  latePenaltyPerStop: 500,
+  unassignedPenaltyPerOrder: 2000
+};
 
 function todayDate() {
   const now = new Date();
@@ -102,6 +113,10 @@ function minutesToTime(value: number) {
   return `${hours}:${minutes}`;
 }
 
+function formatCurrency(value: number | undefined) {
+  return `${Math.round(value ?? 0).toLocaleString("th-TH")} บาท`;
+}
+
 type DisplayRouteStop = RouteStop & {
   deliveryCount: number;
   orderIds: string[];
@@ -146,12 +161,70 @@ function distanceKm(a: Coordinate, b: Coordinate) {
   return 2 * radius * Math.asin(Math.sqrt(h));
 }
 
+function calculateRouteCost(
+  distanceKmValue: number,
+  durationMinutes: number,
+  lateStopCount: number,
+  costModel: CostModel
+) {
+  const fixedCost = Math.max(0, costModel.vehicleFixedCost);
+  const distanceCost = Math.max(0, distanceKmValue) * Math.max(0, costModel.costPerKm);
+  const timeCost = (Math.max(0, durationMinutes) / 60) * Math.max(0, costModel.costPerHour);
+  const overtimeMinutes = Math.max(0, durationMinutes - Math.max(0, costModel.driverShiftMinutes));
+  const overtimeCost = (overtimeMinutes / 60) * Math.max(0, costModel.overtimeCostPerHour);
+  const latePenalty = Math.max(0, lateStopCount) * Math.max(0, costModel.latePenaltyPerStop);
+  const totalCost = fixedCost + distanceCost + timeCost + overtimeCost + latePenalty;
+  return {
+    fixedCost: Number(fixedCost.toFixed(2)),
+    distanceCost: Number(distanceCost.toFixed(2)),
+    timeCost: Number(timeCost.toFixed(2)),
+    overtimeCost: Number(overtimeCost.toFixed(2)),
+    latePenalty: Number(latePenalty.toFixed(2)),
+    totalCost: Number(totalCost.toFixed(2))
+  };
+}
+
+function buildCostBreakdown(routes: RoutePlan[], unassignedOrders: string[], costModel: CostModel) {
+  const unassignedPenalty = unassignedOrders.length * Math.max(0, costModel.unassignedPenaltyPerOrder);
+  return {
+    fixedCost: Number(routes.reduce((sum, route) => sum + (route.fixedCost ?? 0), 0).toFixed(2)),
+    distanceCost: Number(routes.reduce((sum, route) => sum + (route.distanceCost ?? 0), 0).toFixed(2)),
+    timeCost: Number(routes.reduce((sum, route) => sum + (route.timeCost ?? 0), 0).toFixed(2)),
+    overtimeCost: Number(routes.reduce((sum, route) => sum + (route.overtimeCost ?? 0), 0).toFixed(2)),
+    latePenalty: Number(routes.reduce((sum, route) => sum + (route.latePenalty ?? 0), 0).toFixed(2)),
+    unassignedPenalty: Number(unassignedPenalty.toFixed(2)),
+    totalCost: Number((routes.reduce((sum, route) => sum + (route.totalCost ?? 0), 0) + unassignedPenalty).toFixed(2))
+  };
+}
+
+function buildScenarioSummary(
+  status: ScenarioResult["status"],
+  routes: RoutePlan[],
+  unassignedOrders: string[],
+  warnings: string[],
+  costBreakdown: Record<string, number>
+) {
+  if (!routes.length) return ["ยังไม่มีเส้นทางที่จัดได้จากข้อมูลชุดนี้"];
+  const orderCount = routes.reduce((sum, route) => sum + route.stops.filter((stop) => stop.orderId).length, 0);
+  const totalDistance = routes.reduce((sum, route) => sum + route.distanceKm, 0);
+  const totalDuration = routes.reduce((sum, route) => sum + route.durationMinutes, 0);
+  const summary = [
+    `ใช้รถ ${routes.length} คัน จัดส่ง ${orderCount} ออเดอร์ ระยะทางรวม ${totalDistance.toFixed(1)} กม. ใช้เวลารวม ${totalDuration} นาที`,
+    `ต้นทุนจำลองรวม ${formatCurrency(costBreakdown.totalCost)} จากค่ารถ ระยะทาง เวลา OT และ penalty`
+  ];
+  if (status === "fallback") summary.push("ผลลัพธ์นี้เป็น fallback ในเครื่อง ใช้สำหรับทดลองเมื่อ backend/routing API ยังติดต่อไม่ได้");
+  if (unassignedOrders.length) summary.push(`มีออเดอร์ยังไม่ถูกจัด ${unassignedOrders.length} รายการ`);
+  if (warnings.length) summary.push(`มีข้อเตือน ${warnings.length} รายการ เช่น ${warnings[0]}`);
+  return summary;
+}
+
 function buildLocalFallback(
   scenarioId: string,
   depotId: string,
   locations: LocationPoint[],
   vehicles: Vehicle[],
-  orders: Order[]
+  orders: Order[],
+  costModel: CostModel
 ): ScenarioResult {
   const locationById = new Map(locations.map((location) => [location.id, location]));
   const depot = locationById.get(depotId) ?? locations[0];
@@ -244,6 +317,12 @@ function buildLocalFallback(
         serviceMinutes: 0,
         warnings: []
       });
+      const routeDuration = Math.round(elapsed - 8 * 60);
+      const lateStopCount = stops.reduce(
+        (sum, stop) => sum + stop.warnings.filter((warning) => warning.includes("เวลา") || warning.includes("Time window")).length,
+        0
+      );
+      const routeCost = calculateRouteCost(routeDistance, routeDuration, lateStopCount, costModel);
 
       return {
         vehicleId: bucket.vehicle.id,
@@ -251,23 +330,35 @@ function buildLocalFallback(
         color: routeColors[index % routeColors.length],
         stops,
         distanceKm: Number(routeDistance.toFixed(1)),
-        durationMinutes: Math.round(elapsed - 8 * 60),
+        durationMinutes: routeDuration,
         loadKg: bucket.loadKg,
         loadCbm: Number(bucket.loadCbm.toFixed(1)),
         warnings,
         routeNotes: buildLocalRouteNotes(bucket.orders, locations),
+        fixedCost: routeCost.fixedCost,
+        distanceCost: routeCost.distanceCost,
+        timeCost: routeCost.timeCost,
+        overtimeCost: routeCost.overtimeCost,
+        latePenalty: routeCost.latePenalty,
+        totalCost: routeCost.totalCost,
         geometry: stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }))
       };
     });
 
+  const fallbackWarnings = ["ใช้แผนประมาณการในเครื่อง เพราะยังติดต่อ backend OR-Tools ไม่สำเร็จ"];
+  const costBreakdown = buildCostBreakdown(routes, unassignedOrders, costModel);
+
   return {
     scenarioId,
     status: "fallback",
-    objective: routes.reduce((sum, route) => sum + route.distanceKm, 0),
+    objective: costBreakdown.totalCost,
     totalDistanceKm: Number(routes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
     totalDurationMinutes: routes.reduce((sum, route) => sum + route.durationMinutes, 0),
+    totalCost: costBreakdown.totalCost,
+    costBreakdown,
+    summary: buildScenarioSummary("fallback", routes, unassignedOrders, fallbackWarnings, costBreakdown),
     unassignedOrders,
-    warnings: ["ใช้แผนประมาณการในเครื่อง เพราะยังติดต่อ backend OR-Tools ไม่สำเร็จ"],
+    warnings: fallbackWarnings,
     routes
   };
 }
@@ -399,6 +490,9 @@ function emptyScenarioResult(scenarioId: string): ScenarioResult {
     objective: 0,
     totalDistanceKm: 0,
     totalDurationMinutes: 0,
+    totalCost: 0,
+    costBreakdown: {},
+    summary: [],
     unassignedOrders: [],
     warnings: [],
     routes: []
@@ -410,6 +504,7 @@ export default function Home() {
   const [locations, setLocations] = useState<LocationPoint[]>(sampleLocations);
   const [vehicles, setVehicles] = useState<Vehicle[]>(sampleVehicles);
   const [orders, setOrders] = useState<Order[]>(sampleOrders);
+  const [costModel, setCostModel] = useState<CostModel>(defaultCostModel);
   const [result, setResult] = useState<ScenarioResult>(() => emptyScenarioResult("baseline"));
   const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
   const [planningDate, setPlanningDate] = useState(() => todayDate());
@@ -549,7 +644,8 @@ export default function Home() {
       depotId: depot.id,
       locations,
       vehicles,
-      orders: dailyOrders
+      orders: dailyOrders,
+      costModel
     };
 
     try {
@@ -566,7 +662,7 @@ export default function Home() {
       setComparison((current) => [optimized, ...current.filter((item) => item.scenarioId !== optimized.scenarioId)].slice(0, 4));
     } catch {
       setOptimizerState("offline");
-      const fallback = buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders);
+      const fallback = buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders, payload.costModel);
       setResult(fallback);
       setHasCalculatedRoute(true);
       setComparison((current) => [fallback, ...current.filter((item) => item.scenarioId !== fallback.scenarioId)].slice(0, 4));
@@ -576,7 +672,7 @@ export default function Home() {
         setActivePanel("run");
       }
     }
-  }, [dailyOrders, depot, locations, scenarioName, vehicles]);
+  }, [costModel, dailyOrders, depot, locations, scenarioName, vehicles]);
 
   const addVehicle = () => {
     if (!depot) return;
@@ -758,6 +854,13 @@ export default function Home() {
         ...(vehicle && orderStops.length > vehicle.maxStops ? [`${vehicle.name} จำนวนจุดส่งเกินกำหนด`] : [])
       ];
       const routeDistance = stops.slice(1).reduce((sum, stop, index) => sum + distanceKm(stops[index], stop), 0);
+      const durationMinutes = Math.round((routeDistance / 28) * 60 + orderStops.reduce((sum, stop) => sum + stop.serviceMinutes, 0));
+      const routeCost = calculateRouteCost(
+        routeDistance,
+        durationMinutes,
+        stops.reduce((sum, stop) => sum + stop.warnings.filter((warning) => warning.includes("เวลา") || warning.includes("Time window")).length, 0),
+        costModel
+      );
       return {
         ...route,
         stops,
@@ -765,19 +868,32 @@ export default function Home() {
         loadKg,
         loadCbm,
         distanceKm: Number(routeDistance.toFixed(1)),
-        durationMinutes: Math.round((routeDistance / 28) * 60 + orderStops.reduce((sum, stop) => sum + stop.serviceMinutes, 0)),
+        durationMinutes,
         warnings,
-        routeNotes: route.routeNotes ?? []
+        routeNotes: route.routeNotes ?? [],
+        fixedCost: routeCost.fixedCost,
+        distanceCost: routeCost.distanceCost,
+        timeCost: routeCost.timeCost,
+        overtimeCost: routeCost.overtimeCost,
+        latePenalty: routeCost.latePenalty,
+        totalCost: routeCost.totalCost
       };
     });
-    setResult((current) => ({
-      ...current,
-      status: "fallback",
-      routes: nextRoutes,
-      totalDistanceKm: Number(nextRoutes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
-      totalDurationMinutes: nextRoutes.reduce((sum, route) => sum + route.durationMinutes, 0),
-      warnings: ["มีการปรับเส้นทางด้วยมือ ควรคำนวณ VRP ใหม่เพื่อจัดลำดับจุดส่งอีกครั้ง"]
-    }));
+    const manualWarnings = ["มีการปรับเส้นทางด้วยมือ ควรคำนวณ VRP ใหม่เพื่อจัดลำดับจุดส่งอีกครั้ง"];
+    setResult((current) => {
+      const costBreakdown = buildCostBreakdown(nextRoutes, current.unassignedOrders, costModel);
+      return {
+        ...current,
+        status: "fallback",
+        routes: nextRoutes,
+        totalDistanceKm: Number(nextRoutes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
+        totalDurationMinutes: nextRoutes.reduce((sum, route) => sum + route.durationMinutes, 0),
+        totalCost: costBreakdown.totalCost,
+        costBreakdown,
+        summary: buildScenarioSummary("fallback", nextRoutes, current.unassignedOrders, manualWarnings, costBreakdown),
+        warnings: manualWarnings
+      };
+    });
   };
 
   return (
@@ -1118,6 +1234,14 @@ export default function Home() {
                       />
                     ))}
                   </div>
+                  <CostModelEditor
+                    costModel={costModel}
+                    onChange={(patch) => {
+                      setCostModel((current) => ({ ...current, ...patch }));
+                      setResult(emptyScenarioResult(scenarioName || "draft"));
+                      setHasCalculatedRoute(false);
+                    }}
+                  />
                   <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
                     {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
                     {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังจัดเส้นทาง") : "จัดเส้นทาง"}
@@ -1210,7 +1334,7 @@ export default function Home() {
                 {isRunning
                   ? "กำลังคำนวณเส้นถนนจริง..."
                   : hasCalculatedRoute
-                    ? `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที`
+                    ? `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที · ${formatCurrency(result.totalCost)}`
                     : "แสดงตำแหน่งร้านก่อน ยังไม่วาดเส้นทาง"}
               </p>
             </div>
@@ -1229,6 +1353,38 @@ export default function Home() {
                 QR คนรถ
               </Button>
             </div>
+          )}
+          {hasCalculatedRoute && (
+            <Card className="mb-4 border-slate-200">
+              <CardHeader>
+                <CardTitle>สรุปหลังคำนวณ</CardTitle>
+                <CardDescription>
+                  ต้นทุนจำลองรวม {formatCurrency(result.totalCost)} · objective ใช้ cost model ชุดนี้
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <RouteMetric label="ค่ารถ" value={formatCurrency(result.costBreakdown?.fixedCost)} />
+                  <RouteMetric label="ค่าระยะทาง" value={formatCurrency(result.costBreakdown?.distanceCost)} />
+                  <RouteMetric label="ค่าเวลา" value={formatCurrency(result.costBreakdown?.timeCost)} />
+                  <RouteMetric
+                    label="Penalty/OT"
+                    value={formatCurrency(
+                      (result.costBreakdown?.latePenalty ?? 0) +
+                        (result.costBreakdown?.overtimeCost ?? 0) +
+                        (result.costBreakdown?.unassignedPenalty ?? 0)
+                    )}
+                  />
+                </div>
+                {(result.summary ?? []).length > 0 && (
+                  <div className="space-y-1 rounded-xl border border-slate-200 bg-[#F8FAFC] p-3 text-xs leading-relaxed text-slate-700">
+                    {result.summary.map((item) => (
+                      <p key={item}>{item}</p>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           )}
           <div className="space-y-3">
             {!hasCalculatedRoute && (
@@ -1264,10 +1420,11 @@ export default function Home() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  <div className="grid grid-cols-3 gap-2 text-xs">
+                  <div className="grid grid-cols-2 gap-2 text-xs">
                     <RouteMetric label="ระยะทาง" value={`${route.distanceKm.toFixed(1)} กม.`} />
                     <RouteMetric label="เวลา" value={`${route.durationMinutes} นาที`} />
                     <RouteMetric label="น้ำหนัก" value={`${Math.round(route.loadKg)} กก.`} />
+                    <RouteMetric label="ต้นทุน" value={formatCurrency(route.totalCost)} />
                   </div>
                   {(route.routeNotes ?? []).length > 0 && (
                     <div className="space-y-1 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-950">
@@ -1352,6 +1509,57 @@ function RouteMetric({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl bg-[#F8FAFC] px-3 py-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="font-bold text-primary">{value}</div>
+    </div>
+  );
+}
+
+function CostModelEditor({
+  costModel,
+  onChange
+}: {
+  costModel: CostModel;
+  onChange: (patch: Partial<CostModel>) => void;
+}) {
+  const fields: { key: keyof CostModel; label: string; suffix: string; step?: string }[] = [
+    { key: "vehicleFixedCost", label: "ค่ารถต่อคัน", suffix: "บาท" },
+    { key: "costPerKm", label: "ค่าระยะทาง", suffix: "บาท/กม.", step: "0.5" },
+    { key: "costPerHour", label: "ค่าเวลาเดินทาง", suffix: "บาท/ชม." },
+    { key: "overtimeCostPerHour", label: "ค่า OT", suffix: "บาท/ชม." },
+    { key: "driverShiftMinutes", label: "กะคนขับ", suffix: "นาที" },
+    { key: "latePenaltyPerStop", label: "Penalty ช้า", suffix: "บาท/จุด" },
+    { key: "unassignedPenaltyPerOrder", label: "Penalty ค้าง", suffix: "บาท/ออเดอร์" }
+  ];
+
+  return (
+    <div className="rounded-[14px] border border-slate-200 bg-white p-3">
+      <div className="mb-3 flex items-start gap-2">
+        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+          <Calculator className="h-4 w-4" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold">Cost model จำลอง</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            เป็นค่าสมมุติสำหรับทดสอบ แก้ได้ก่อนรันเพื่อดูผลต่อต้นทุนและการเลือกเส้นทาง
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {fields.map((field) => (
+          <Field key={field.key} label={field.label}>
+            <div className="flex items-center rounded-xl border border-input bg-white focus-within:ring-2 focus-within:ring-ring">
+              <Input
+                type="number"
+                min="0"
+                step={field.step ?? "1"}
+                value={costModel[field.key]}
+                onChange={(event) => onChange({ [field.key]: parseNumber(event.target.value, defaultCostModel[field.key]) } as Partial<CostModel>)}
+                className="border-0 focus-visible:ring-0"
+              />
+              <span className="shrink-0 pr-3 text-[10px] text-muted-foreground">{field.suffix}</span>
+            </div>
+          </Field>
+        ))}
+      </div>
     </div>
   );
 }

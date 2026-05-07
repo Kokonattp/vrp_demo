@@ -34,6 +34,16 @@ export type Order = {
   priority: "normal" | "high";
 };
 
+export type CostModel = {
+  vehicleFixedCost: number;
+  costPerKm: number;
+  costPerHour: number;
+  overtimeCostPerHour: number;
+  driverShiftMinutes: number;
+  latePenaltyPerStop: number;
+  unassignedPenaltyPerOrder: number;
+};
+
 export type RouteStop = {
   locationId: string;
   orderId?: string;
@@ -58,6 +68,12 @@ export type RoutePlan = {
   loadCbm: number;
   warnings: string[];
   routeNotes: string[];
+  fixedCost: number;
+  distanceCost: number;
+  timeCost: number;
+  overtimeCost: number;
+  latePenalty: number;
+  totalCost: number;
   geometry: Coordinate[];
 };
 
@@ -67,6 +83,9 @@ export type ScenarioResult = {
   objective: number;
   totalDistanceKm: number;
   totalDurationMinutes: number;
+  totalCost: number;
+  costBreakdown: Record<string, number>;
+  summary: string[];
   unassignedOrders: string[];
   warnings: string[];
   routes: RoutePlan[];
@@ -78,4 +97,5 @@ export type OptimizeRequest = {
   locations: LocationPoint[];
   vehicles: Vehicle[];
   orders: Order[];
+  costModel: CostModel;
 };

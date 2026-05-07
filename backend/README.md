@@ -32,3 +32,21 @@ GOOGLE_TRAFFIC_BUCKETS=08:00,09:00,10:00,13:00,15:00,17:00
 ```
 
 Google mode uses `Compute Route Matrix` for traffic-aware travel times in OR-Tools and `computeRoutes` for road-following map polylines. Fixed-time stops use the closest traffic bucket; flexible stops use the best available bucket and get a lower adjacency cost when they are near a fixed-time anchor.
+
+## Cost Model
+
+`POST /api/optimize` supports an optional `costModel` object for simulation:
+
+```json
+{
+  "vehicleFixedCost": 1200,
+  "costPerKm": 12,
+  "costPerHour": 180,
+  "overtimeCostPerHour": 250,
+  "driverShiftMinutes": 480,
+  "latePenaltyPerStop": 500,
+  "unassignedPenaltyPerOrder": 2000
+}
+```
+
+The model is intentionally editable test data. The optimizer uses variable distance/time cost and active vehicle fixed cost while planning, then returns route-level costs, `costBreakdown`, `totalCost`, and `summary`.

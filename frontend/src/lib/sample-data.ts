@@ -147,6 +147,9 @@ export const initialScenarioComparison: ScenarioResult[] = [
     objective: 0,
     totalDistanceKm: 58.4,
     totalDurationMinutes: 212,
+    totalCost: 0,
+    costBreakdown: {},
+    summary: [],
     unassignedOrders: [],
     warnings: ["สถานการณ์พื้นฐานใช้ระยะทางประมาณการระหว่างรอข้อมูล routing API"],
     routes: []
@@ -157,6 +160,9 @@ export const initialScenarioComparison: ScenarioResult[] = [
     objective: 0,
     totalDistanceKm: 64.7,
     totalDurationMinutes: 248,
+    totalCost: 0,
+    costBreakdown: {},
+    summary: [],
     unassignedOrders: ["ord-1005"],
     warnings: ["มีหนึ่งออเดอร์ที่เกินความจุคงเหลือของแผนรถลดจำนวน"],
     routes: []
