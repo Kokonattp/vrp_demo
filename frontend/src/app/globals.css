@@ -122,3 +122,154 @@
     transform: rotate(360deg);
   }
 }
+
+.print-workorders {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  body {
+    background: #ffffff;
+  }
+
+  .app-shell {
+    display: none !important;
+  }
+
+  .print-workorders {
+    display: block;
+    color: #1b2e4b;
+    font-family: "Prompt", "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
+  }
+
+  .print-page {
+    min-height: 270mm;
+    page-break-after: always;
+  }
+
+  .print-page:last-child {
+    page-break-after: auto;
+  }
+
+  .print-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    border-bottom: 2px solid #1b2e4b;
+    padding-bottom: 14px;
+  }
+
+  .print-kicker {
+    margin: 0 0 6px;
+    color: #3b82f6;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .print-header h1 {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 800;
+  }
+
+  .print-header p {
+    margin: 4px 0 0;
+    color: #475569;
+    font-size: 12px;
+  }
+
+  .print-qr-box {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    color: #475569;
+    font-size: 10px;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .print-qr-box img {
+    width: 88px;
+    height: 88px;
+  }
+
+  .print-summary {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+    margin: 14px 0;
+  }
+
+  .print-summary div {
+    border: 1px solid #dbe4ef;
+    border-radius: 8px;
+    padding: 8px;
+  }
+
+  .print-summary span {
+    display: block;
+    color: #64748b;
+    font-size: 10px;
+  }
+
+  .print-summary strong {
+    display: block;
+    margin-top: 3px;
+    font-size: 13px;
+  }
+
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+
+  .print-table th {
+    background: #1b2e4b;
+    color: #ffffff;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .print-table th,
+  .print-table td {
+    border: 1px solid #dbe4ef;
+    padding: 7px;
+    vertical-align: top;
+  }
+
+  .print-table td strong,
+  .print-table td span {
+    display: block;
+  }
+
+  .print-table td span {
+    color: #64748b;
+    font-size: 10px;
+  }
+
+  .print-checkbox {
+    display: inline-block !important;
+    width: 10px;
+    height: 10px;
+    margin-right: 4px;
+    border: 1px solid #1b2e4b;
+    vertical-align: -1px;
+  }
+
+  .print-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 18px;
+    color: #334155;
+    font-size: 12px;
+  }
+}

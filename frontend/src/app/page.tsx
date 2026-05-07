@@ -10,7 +10,10 @@ import {
   FileUp,
   Play,
   Plus,
+  Printer,
+  QrCode,
   Route,
+  Smartphone,
   Truck,
   Upload,
   X
@@ -24,6 +27,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import QRCode from "qrcode";
+import { buildDriverRoutePayload, encodeDriverPayload, minutesToClock, type DriverRoutePayload } from "@/lib/driver-payload";
 import { initialScenarioComparison, routeColors, sampleLocations, sampleOrders, sampleVehicles } from "@/lib/sample-data";
 import type { Coordinate, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
 
@@ -351,6 +356,7 @@ export default function Home() {
   const [scenarioName, setScenarioName] = useState("morning-wave");
   const [showGuide, setShowGuide] = useState(false);
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
+  const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -391,6 +397,53 @@ export default function Home() {
     () => orders.find((order) => order.locationId === selectedLocation?.id && order.serviceDate === planningDate),
     [orders, planningDate, selectedLocation?.id]
   );
+  const driverPayloads = useMemo(
+    () =>
+      result.routes.map((route) =>
+        buildDriverRoutePayload({
+          route,
+          locations,
+          orders: dailyOrders,
+          planningDate,
+          scenarioId: result.scenarioId
+        })
+      ),
+    [dailyOrders, locations, planningDate, result.routes, result.scenarioId]
+  );
+
+  useEffect(() => {
+    let isActive = true;
+    if (!driverPayloads.length) {
+      const timer = window.setTimeout(() => setDriverAssets({}), 0);
+      return () => {
+        isActive = false;
+        window.clearTimeout(timer);
+      };
+    }
+
+    Promise.all(
+      driverPayloads.map(async (payload) => {
+        const encoded = encodeDriverPayload(payload);
+        const url = `${window.location.origin}/driver#data=${encoded}`;
+        const qr = await QRCode.toDataURL(url, {
+          errorCorrectionLevel: "M",
+          margin: 1,
+          width: 220,
+          color: {
+            dark: "#1B2E4B",
+            light: "#FFFFFF"
+          }
+        });
+        return [payload.vehicleId, { url, qr }] as const;
+      })
+    ).then((entries) => {
+      if (isActive) setDriverAssets(Object.fromEntries(entries));
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [driverPayloads]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -513,6 +566,10 @@ export default function Home() {
     link.download = "vrp-branch-template.csv";
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const printWorkOrders = () => {
+    window.print();
   };
 
   const importCsvFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -648,7 +705,8 @@ export default function Home() {
   };
 
   return (
-    <main className="h-screen overflow-hidden bg-[#F8FAFC]">
+    <>
+    <main className="app-shell h-screen overflow-hidden bg-[#F8FAFC]">
       {showGuide && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/30 p-4">
           <div className="w-full max-w-xl rounded-[14px] border border-border bg-white shadow-[0_16px_36px_rgba(15,23,42,0.08)]">
@@ -1066,6 +1124,18 @@ export default function Home() {
               {isRunning ? "กำลังคำนวณ" : hasCalculatedRoute ? statusLabel(result.status) : "ยังไม่คำนวณ"}
             </Badge>
           </div>
+          {hasCalculatedRoute && result.routes.length > 0 && (
+            <div className="mb-4 grid grid-cols-2 gap-2">
+              <Button className="w-full" onClick={printWorkOrders}>
+                <Printer className="h-4 w-4" />
+                พิมพ์ใบงาน
+              </Button>
+              <Button variant="outline" className="w-full" onClick={() => setActivePanel("run")}>
+                <QrCode className="h-4 w-4" />
+                QR คนรถ
+              </Button>
+            </div>
+          )}
           <div className="space-y-3">
             {!hasCalculatedRoute && (
               <Card className="border-slate-200">
@@ -1085,6 +1155,7 @@ export default function Home() {
               const displayStops = compactRouteStops(route.stops);
               const deliveryStops = displayStops.filter((stop) => stop.orderIds.length > 0);
               const orderCount = route.stops.filter((stop) => stop.orderId).length;
+              const driverAsset = driverAssets[route.vehicleId];
               return (
               <Card key={route.vehicleId} className="overflow-hidden border-slate-200">
                 <CardHeader>
@@ -1120,6 +1191,25 @@ export default function Home() {
                       </div>
                     ))}
                   </div>
+                  {driverAsset && (
+                    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={driverAsset.qr} alt={`QR ${route.vehicleName}`} className="h-[88px] w-[88px] rounded-md border border-slate-100" />
+                      <div className="min-w-0 space-y-2">
+                        <p className="text-xs font-semibold">Driver mobile view</p>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">สแกน QR เพื่อเปิดรายการส่งของรถคันนี้บนมือถือ</p>
+                        <a
+                          href={driverAsset.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-8 w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-3 text-xs font-semibold hover:bg-secondary"
+                        >
+                          <Smartphone className="h-4 w-4" />
+                          เปิดหน้าคนรถ
+                        </a>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
               );
@@ -1128,6 +1218,8 @@ export default function Home() {
         </aside>
       </div>
     </main>
+    <WorkOrdersPrint payloads={driverPayloads} assets={driverAssets} />
+    </>
   );
 }
 
@@ -1160,6 +1252,118 @@ function RouteMetric({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="font-bold text-primary">{value}</div>
     </div>
+  );
+}
+
+function WorkOrdersPrint({
+  payloads,
+  assets
+}: {
+  payloads: DriverRoutePayload[];
+  assets: Record<string, { url: string; qr: string }>;
+}) {
+  if (!payloads.length) return null;
+
+  return (
+    <section className="print-workorders">
+      {payloads.map((payload) => {
+        const asset = assets[payload.vehicleId];
+        const deliveryStops = payload.stops.filter((stop) => stop.orderId);
+        return (
+          <article key={payload.vehicleId} className="print-page">
+            <header className="print-header">
+              <div>
+                <p className="print-kicker">VRP Simulation Studio</p>
+                <h1>ใบงานจัดส่ง</h1>
+                <p>
+                  วันที่ {payload.planningDate} · แผน {payload.scenarioId}
+                </p>
+              </div>
+              <div className="print-qr-box">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {asset?.qr && <img src={asset.qr} alt={`QR ${payload.vehicleName}`} />}
+                <span>สแกนเพื่อเปิดงานบนมือถือ</span>
+              </div>
+            </header>
+
+            <section className="print-summary">
+              <div>
+                <span>รถ</span>
+                <strong>{payload.vehicleName}</strong>
+              </div>
+              <div>
+                <span>จุดส่ง</span>
+                <strong>{deliveryStops.length}</strong>
+              </div>
+              <div>
+                <span>ระยะทาง</span>
+                <strong>{payload.distanceKm.toFixed(1)} กม.</strong>
+              </div>
+              <div>
+                <span>เวลา</span>
+                <strong>{payload.durationMinutes} นาที</strong>
+              </div>
+              <div>
+                <span>น้ำหนัก</span>
+                <strong>{Math.round(payload.loadKg)} กก.</strong>
+              </div>
+              <div>
+                <span>CBM</span>
+                <strong>{payload.loadCbm.toFixed(1)}</strong>
+              </div>
+            </section>
+
+            <table className="print-table">
+              <thead>
+                <tr>
+                  <th>ลำดับ</th>
+                  <th>เวลา</th>
+                  <th>สาขา/คลัง</th>
+                  <th>ช่วงส่ง</th>
+                  <th>ปริมาณสะสม</th>
+                  <th>สถานะ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.stops.map((stop, index) => (
+                  <tr key={`${stop.locationId}-${index}`}>
+                    <td>{stop.orderId ? stop.sequence : "D"}</td>
+                    <td>{minutesToClock(stop.arrivalMinutes)}</td>
+                    <td>
+                      <strong>{stop.name}</strong>
+                      <span>{stop.address || `${stop.lat.toFixed(5)}, ${stop.lng.toFixed(5)}`}</span>
+                      {stop.orderId && <span>Order: {stop.orderId}</span>}
+                    </td>
+                    <td>{stop.timeWindow || "-"}</td>
+                    <td>
+                      {stop.orderId ? (
+                        <>
+                          {Math.round(stop.loadKg)} กก.
+                          <br />
+                          {stop.loadCbm.toFixed(1)} CBM
+                        </>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                    <td>
+                      <span className="print-checkbox" /> ส่งแล้ว
+                      <br />
+                      <span className="print-checkbox" /> มีปัญหา
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <footer className="print-footer">
+              <div>ผู้จัดเส้นทาง ____________________</div>
+              <div>คนขับ ____________________</div>
+            </footer>
+          </article>
+        );
+      })}
+    </section>
   );
 }
 
