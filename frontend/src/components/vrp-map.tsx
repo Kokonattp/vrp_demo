@@ -14,6 +14,7 @@ type VrpMapProps = {
   orders: Order[];
   routes: RoutePlan[];
   selectedLocationId?: string;
+  onLocationSelect?: (id: string) => void;
   onLocationMove: (id: string, coordinate: Coordinate) => void;
 };
 
@@ -39,7 +40,7 @@ function minutesToTime(value: number) {
   return `${hours}:${minutes}`;
 }
 
-export function VrpMap({ locations, orders, routes, selectedLocationId, onLocationMove }: VrpMapProps) {
+export function VrpMap({ locations, orders, routes, selectedLocationId, onLocationSelect, onLocationMove }: VrpMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
@@ -184,11 +185,11 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
       const routeText = routeStop ? `<br/><span>รถ: ${escapeHtml(routeStop.routeName)}</span>` : "";
       const orderText = routeStop?.orderIds.length ? `<br/><span>ออเดอร์: ${escapeHtml(routeStop.orderIds.join(", "))}</span>` : "";
       const arrivalText = routeStop ? `<br/><span>ถึงประมาณ: ${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
-      const loadText = routeStop ? `<br/><span>โหลด: ${Math.round(routeStop.loadKg)} กก., ${routeStop.loadCbm.toFixed(1)} CBM</span>` : "";
+      const loadText = routeStop ? `<br/><span>ปริมาณสะสมบนรถ: ${Math.round(routeStop.loadKg)} กก., ${routeStop.loadCbm.toFixed(1)} CBM</span>` : "";
       const warningText = routeStop?.warnings.length ? `<br/><span>เตือน: ${escapeHtml(routeStop.warnings.join(", "))}</span>` : "";
       const addressText = location.address ? `<span>${escapeHtml(location.address)}</span>` : "<span>ไม่ได้ระบุที่อยู่</span>";
       const orderSummaryText = orderSummary
-        ? `<span>งานส่ง: ${orderSummary.count} ออเดอร์ · ${Math.round(orderSummary.weightKg)} กก. · ${orderSummary.cbm.toFixed(1)} CBM</span>`
+        ? `<span>ปริมาณงาน: ${orderSummary.count} ออเดอร์ · ${Math.round(orderSummary.weightKg)} กก. · ${orderSummary.cbm.toFixed(1)} CBM</span>`
         : "";
       const serviceText = orderSummary
         ? `<span>เวลาบริการ: ${orderSummary.serviceMinutes} นาที · ช่วงส่ง: ${escapeHtml(Array.from(new Set(orderSummary.timeWindows)).join(", "))}</span>`
@@ -220,6 +221,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
       ].join(" ");
       markerElement.style.backgroundColor = markerColor;
       markerElement.textContent = markerLabel;
+      markerElement.onclick = () => onLocationSelect?.(location.id);
 
       const existing = markerRef.current[location.id];
       if (existing) {
@@ -228,6 +230,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         existing.getElement().className = markerElement.className;
         existing.getElement().style.backgroundColor = markerColor;
         existing.getElement().textContent = markerElement.textContent;
+        existing.getElement().onclick = () => onLocationSelect?.(location.id);
         return;
       }
 
@@ -243,7 +246,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
 
       markerRef.current[location.id] = marker;
     });
-  }, [locations, onLocationMove, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+  }, [locations, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;

@@ -228,8 +228,8 @@ async def optimize(request: OptimizeRequest):
         routing.AddVariableMinimizedByFinalizer(time_dimension.CumulVar(routing.Start(vehicle_id)))
         routing.AddVariableMinimizedByFinalizer(time_dimension.CumulVar(routing.End(vehicle_id)))
 
-    penalty = 100_000
-    for node_index in range(1, len(nodes)):
+    for node_index, order in enumerate(node_orders[1:], start=1):
+        penalty = 250_000 if order and order.priority == "high" else 100_000
         routing.AddDisjunction([manager.NodeToIndex(node_index)], penalty)
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
@@ -398,7 +398,8 @@ def build_greedy_result(
 ) -> ScenarioResult:
     vehicle_loads = [{"orders": [], "kg": 0.0, "cbm": 0.0} for _ in request.vehicles]
     unassigned: list[str] = []
-    for order in request.orders:
+    prioritized_orders = sorted(request.orders, key=lambda order: order.priority != "high")
+    for order in prioritized_orders:
         placed = False
         for index, vehicle in enumerate(request.vehicles):
             load = vehicle_loads[index]

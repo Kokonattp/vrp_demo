@@ -138,7 +138,7 @@ function buildLocalFallback(
     loadCbm: 0
   }));
 
-  orders.forEach((order) => {
+  [...orders].sort((a, b) => Number(b.priority === "high") - Number(a.priority === "high")).forEach((order) => {
     const bucket = vehicleBuckets.find(
       (candidate) =>
         candidate.orders.length < candidate.vehicle.maxStops &&
@@ -349,6 +349,14 @@ export default function Home() {
     () => [...result.warnings, ...result.routes.flatMap((route) => route.warnings), ...result.unassignedOrders.map((id) => `${id} ยังไม่ถูกจัดส่ง`)],
     [result]
   );
+  const selectedLocation = useMemo(
+    () => locations.find((location) => location.id === selectedLocationId) ?? locations[0],
+    [locations, selectedLocationId]
+  );
+  const selectedBranchOrder = useMemo(
+    () => orders.find((order) => order.locationId === selectedLocation?.id),
+    [orders, selectedLocation?.id]
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -476,6 +484,63 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     file.text().then((text) => setCsvText(text));
+  };
+
+  const addBranch = () => {
+    const nextIndex = locations.filter((location) => location.type === "store").length + 1;
+    const depotLocation = depot ?? locations[0];
+    const nextLocation: LocationPoint = {
+      id: `store-${nextIndex}`,
+      name: `สาขาใหม่ ${nextIndex}`,
+      type: "store",
+      lat: (depotLocation?.lat ?? 13.7563) + nextIndex * 0.006,
+      lng: (depotLocation?.lng ?? 100.5018) + nextIndex * 0.006,
+      address: ""
+    };
+    const nextOrder: Order = {
+      id: `ord-${nextLocation.id}`,
+      locationId: nextLocation.id,
+      weightKg: 120,
+      cbm: 1,
+      serviceMinutes: 15,
+      timeWindowStart: "09:00",
+      timeWindowEnd: "17:00",
+      priority: "normal"
+    };
+    setLocations((current) => [...current, nextLocation]);
+    setOrders((current) => [...current, nextOrder]);
+    setSelectedLocationId(nextLocation.id);
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
+  };
+
+  const updateSelectedLocation = (patch: Partial<LocationPoint>) => {
+    if (!selectedLocation) return;
+    setLocations((current) => current.map((location) => (location.id === selectedLocation.id ? { ...location, ...patch } : location)));
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
+  };
+
+  const updateSelectedBranchOrder = (patch: Partial<Order>) => {
+    if (!selectedLocation || selectedLocation.type === "depot") return;
+    const baseOrder: Order = selectedBranchOrder ?? {
+      id: `ord-${selectedLocation.id}`,
+      locationId: selectedLocation.id,
+      weightKg: 120,
+      cbm: 1,
+      serviceMinutes: 15,
+      timeWindowStart: "09:00",
+      timeWindowEnd: "17:00",
+      priority: "normal"
+    };
+    const nextOrder = { ...baseOrder, ...patch };
+    setOrders((current) =>
+      current.some((order) => order.id === nextOrder.id)
+        ? current.map((order) => (order.id === nextOrder.id ? nextOrder : order))
+        : [...current, nextOrder]
+    );
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
   };
 
   const moveStopToRoute = (event: DragEvent<HTMLDivElement>, toVehicleId: string) => {
@@ -702,6 +767,104 @@ export default function Home() {
                   </Button>
                 </CardContent>
               </Card>
+
+              <Card className="border-slate-200">
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>ตัวแปรสาขา</CardTitle>
+                      <CardDescription>ใช้คำนวณ VRP: พิกัด, น้ำหนัก, CBM, เวลาบริการ, ช่วงเวลาส่ง, ความด่วน</CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={addBranch}>
+                      <Plus className="h-4 w-4" />
+                      เพิ่มสาขา
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {selectedLocation && (
+                    <>
+                      <div className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+                        เลือกสาขาจากรายการหรือคลิก marker บนแผนที่เพื่อแก้ข้อมูลจุดนั้น
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <Field label="รหัส">
+                          <Input value={selectedLocation.id} readOnly />
+                        </Field>
+                        <Field label="ประเภท">
+                          <Input value={locationTypeLabel(selectedLocation.type)} readOnly />
+                        </Field>
+                        <Field label="ชื่อ">
+                          <Input value={selectedLocation.name} onChange={(event) => updateSelectedLocation({ name: event.target.value })} />
+                        </Field>
+                        <Field label="ที่อยู่">
+                          <Input value={selectedLocation.address ?? ""} onChange={(event) => updateSelectedLocation({ address: event.target.value })} />
+                        </Field>
+                        <Field label="Latitude">
+                          <Input type="number" value={selectedLocation.lat} onChange={(event) => updateSelectedLocation({ lat: Number(event.target.value) })} />
+                        </Field>
+                        <Field label="Longitude">
+                          <Input type="number" value={selectedLocation.lng} onChange={(event) => updateSelectedLocation({ lng: Number(event.target.value) })} />
+                        </Field>
+                      </div>
+
+                      {selectedLocation.type === "store" ? (
+                        <div className="grid grid-cols-2 gap-3 border-t pt-3">
+                          <Field label="น้ำหนัก กก.">
+                            <Input
+                              type="number"
+                              value={selectedBranchOrder?.weightKg ?? 120}
+                              onChange={(event) => updateSelectedBranchOrder({ weightKg: Number(event.target.value) })}
+                            />
+                          </Field>
+                          <Field label="CBM">
+                            <Input
+                              type="number"
+                              value={selectedBranchOrder?.cbm ?? 1}
+                              onChange={(event) => updateSelectedBranchOrder({ cbm: Number(event.target.value) })}
+                            />
+                          </Field>
+                          <Field label="เวลาบริการ">
+                            <Input
+                              type="number"
+                              value={selectedBranchOrder?.serviceMinutes ?? 15}
+                              onChange={(event) => updateSelectedBranchOrder({ serviceMinutes: Number(event.target.value) })}
+                            />
+                          </Field>
+                          <Field label="ความด่วน">
+                            <select
+                              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                              value={selectedBranchOrder?.priority ?? "normal"}
+                              onChange={(event) => updateSelectedBranchOrder({ priority: event.target.value === "high" ? "high" : "normal" })}
+                            >
+                              <option value="normal">ปกติ</option>
+                              <option value="high">ด่วน</option>
+                            </select>
+                          </Field>
+                          <Field label="เริ่มส่ง">
+                            <Input
+                              type="time"
+                              value={selectedBranchOrder?.timeWindowStart ?? "09:00"}
+                              onChange={(event) => updateSelectedBranchOrder({ timeWindowStart: event.target.value })}
+                            />
+                          </Field>
+                          <Field label="สิ้นสุดส่ง">
+                            <Input
+                              type="time"
+                              value={selectedBranchOrder?.timeWindowEnd ?? "17:00"}
+                              onChange={(event) => updateSelectedBranchOrder({ timeWindowEnd: event.target.value })}
+                            />
+                          </Field>
+                        </div>
+                      ) : (
+                        <div className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+                          คลังใช้เป็นจุดเริ่มต้น/จุดกลับรถ จึงไม่มีน้ำหนัก, CBM หรือ time window ของออเดอร์
+                        </div>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
             </TabsContent>
 
             <TabsContent value="vehicles" className="mt-4 space-y-4">
@@ -814,7 +977,14 @@ export default function Home() {
               แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
             </p>
           </div>
-          <VrpMap locations={locations} orders={orders} routes={result.routes} selectedLocationId={selectedLocationId} onLocationMove={updateLocation} />
+          <VrpMap
+            locations={locations}
+            orders={orders}
+            routes={result.routes}
+            selectedLocationId={selectedLocationId}
+            onLocationSelect={setSelectedLocationId}
+            onLocationMove={updateLocation}
+          />
         </section>
 
         <aside className="overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:border-l lg:border-t-0">
