@@ -77,13 +77,21 @@ Create a Zeabur service from the GitHub repo:
 
 ## Routing API
 
-The backend can use real travel distance/time from an OSRM-compatible routing API.
+The backend can use real road distance/time from an OSRM-compatible routing API.
 
 ```bash
 $env:OSRM_BASE_URL="https://router.project-osrm.org"
 ```
 
-If no routing API is available, it falls back to a haversine travel-time simulation so the studio remains usable offline.
+OSRM follows real roads, but does not include live traffic. For traffic-aware VRP analysis, use Google Routes API:
+
+```bash
+$env:ROUTING_PROVIDER="google"
+$env:GOOGLE_MAPS_API_KEY="your_google_maps_key"
+$env:GOOGLE_ROUTING_PREFERENCE="TRAFFIC_AWARE"
+```
+
+With Google routing enabled, the optimizer matrix uses traffic-aware travel duration, and map route lines use Google road polylines. If Google routing is unavailable, the backend falls back to OSRM when configured, then to a haversine travel-time simulation so the studio remains usable offline.
 
 ## PostgreSQL
 

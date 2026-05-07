@@ -1,5 +1,7 @@
 import math
 import os
+import re
+from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
@@ -16,6 +18,9 @@ except ImportError:  # pragma: no cover - lets local dev run before dependencies
 
 ROUTE_COLORS = ["#047f8f", "#d97706", "#6d5dfc", "#0f766e", "#be123c"]
 OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "https://router.project-osrm.org").rstrip("/")
+ROUTING_PROVIDER = os.getenv("ROUTING_PROVIDER", "osrm").strip().lower()
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+GOOGLE_ROUTING_PREFERENCE = os.getenv("GOOGLE_ROUTING_PREFERENCE", "TRAFFIC_AWARE").strip().upper()
 FRONTEND_ORIGINS = [
     origin.strip()
     for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
@@ -120,7 +125,13 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "routingApi": bool(OSRM_BASE_URL), "ortools": pywrapcp is not None}
+    return {
+        "status": "ok",
+        "routingProvider": active_routing_provider(),
+        "routingApi": bool(OSRM_BASE_URL or GOOGLE_MAPS_API_KEY),
+        "trafficAware": active_routing_provider() == "google",
+        "ortools": pywrapcp is not None,
+    }
 
 
 @app.get("/kaitheathcheck")
@@ -257,6 +268,13 @@ async def optimize(request: OptimizeRequest):
 
 
 async def build_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]], list[list[int]], str | None]:
+    if active_routing_provider() == "google":
+        google_result = await build_google_matrices(nodes)
+        if google_result:
+            return google_result
+        if not OSRM_BASE_URL:
+            return build_simulated_matrices(nodes, "Google traffic routing unavailable; simulated travel matrix used.")
+
     if OSRM_BASE_URL:
         coordinates = ";".join(f"{node.lng},{node.lat}" for node in nodes)
         url = f"{OSRM_BASE_URL}/table/v1/driving/{coordinates}"
@@ -267,10 +285,17 @@ async def build_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]],
                 payload = response.json()
                 distances = [[round(cell / 1000, 2) for cell in row] for row in payload["distances"]]
                 durations = [[max(1, round(cell / 60)) for cell in row] for row in payload["durations"]]
-                return distances, durations, None
+                warning = None
+                if ROUTING_PROVIDER == "google":
+                    warning = "Google traffic routing unavailable; OSRM road routing used without live traffic."
+                return distances, durations, warning
         except Exception:
             pass
 
+    return build_simulated_matrices(nodes, "Routing API unavailable; simulated travel matrix used.")
+
+
+def build_simulated_matrices(nodes: list[LocationPoint], warning: str) -> tuple[list[list[float]], list[list[int]], str]:
     distances: list[list[float]] = []
     durations: list[list[int]] = []
     for origin in nodes:
@@ -282,7 +307,52 @@ async def build_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]],
             duration_row.append(max(1, round((km / 30) * 60)))
         distances.append(distance_row)
         durations.append(duration_row)
-    return distances, durations, "Routing API unavailable; simulated travel matrix used."
+    return distances, durations, warning
+
+
+async def build_google_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]], list[list[int]], str | None] | None:
+    if not GOOGLE_MAPS_API_KEY:
+        return None
+
+    element_count = len(nodes) * len(nodes)
+    if GOOGLE_ROUTING_PREFERENCE == "TRAFFIC_AWARE_OPTIMAL" and element_count > 100:
+        return None
+
+    url = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
+    body = {
+        "origins": [{"waypoint": google_waypoint(node)} for node in nodes],
+        "destinations": [{"waypoint": google_waypoint(node)} for node in nodes],
+        "travelMode": "DRIVE",
+        "routingPreference": GOOGLE_ROUTING_PREFERENCE,
+        "departureTime": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": "originIndex,destinationIndex,duration,distanceMeters,status,condition",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(url, json=body, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return None
+
+    distances = [[0.0 for _ in nodes] for _ in nodes]
+    durations = [[0 for _ in nodes] for _ in nodes]
+    for element in payload:
+        origin_index = element.get("originIndex")
+        destination_index = element.get("destinationIndex")
+        if origin_index is None or destination_index is None:
+            continue
+        distance_meters = element.get("distanceMeters", 0)
+        duration_seconds = parse_google_duration_seconds(element.get("duration", "0s"))
+        distances[origin_index][destination_index] = round(distance_meters / 1000, 2)
+        durations[origin_index][destination_index] = max(0, round(duration_seconds / 60))
+
+    return distances, durations, None
 
 
 async def build_solution_result(
@@ -491,6 +561,11 @@ def build_greedy_result(
 
 
 async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate]:
+    if active_routing_provider() == "google" and len(route_nodes) > 1:
+        google_geometry = await build_google_route_geometry(route_nodes)
+        if google_geometry:
+            return google_geometry
+
     if OSRM_BASE_URL and len(route_nodes) > 1:
         coordinates = ";".join(f"{node.lng},{node.lat}" for node in route_nodes)
         url = f"{OSRM_BASE_URL}/route/v1/driving/{coordinates}"
@@ -504,6 +579,96 @@ async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordin
         except Exception:
             pass
     return [Coordinate(lat=node.lat, lng=node.lng) for node in route_nodes]
+
+
+async def build_google_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate] | None:
+    if not GOOGLE_MAPS_API_KEY or len(route_nodes) < 2:
+        return None
+
+    url = "https://routes.googleapis.com/directions/v2:computeRoutes"
+    body = {
+        "origin": google_waypoint(route_nodes[0]),
+        "destination": google_waypoint(route_nodes[-1]),
+        "intermediates": [google_waypoint(node) for node in route_nodes[1:-1]],
+        "travelMode": "DRIVE",
+        "routingPreference": GOOGLE_ROUTING_PREFERENCE,
+        "departureTime": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "computeAlternativeRoutes": False,
+        "polylineQuality": "HIGH_QUALITY",
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": "routes.polyline.encodedPolyline",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(url, json=body, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+            encoded = payload["routes"][0]["polyline"]["encodedPolyline"]
+            return decode_google_polyline(encoded)
+    except Exception:
+        return None
+
+
+def active_routing_provider() -> str:
+    if ROUTING_PROVIDER == "google" and GOOGLE_MAPS_API_KEY:
+        return "google"
+    if OSRM_BASE_URL:
+        return "osrm"
+    return "simulated"
+
+
+def google_waypoint(node: LocationPoint) -> dict:
+    return {
+        "location": {
+            "latLng": {
+                "latitude": node.lat,
+                "longitude": node.lng,
+            }
+        }
+    }
+
+
+def parse_google_duration_seconds(value: str) -> float:
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)s", value or "")
+    if not match:
+        return 0
+    return float(match.group(1))
+
+
+def decode_google_polyline(encoded: str) -> list[Coordinate]:
+    coordinates: list[Coordinate] = []
+    index = 0
+    lat = 0
+    lng = 0
+
+    while index < len(encoded):
+        lat_delta, index = decode_polyline_value(encoded, index)
+        lng_delta, index = decode_polyline_value(encoded, index)
+        lat += lat_delta
+        lng += lng_delta
+        coordinates.append(Coordinate(lat=lat / 1e5, lng=lng / 1e5))
+
+    return coordinates
+
+
+def decode_polyline_value(encoded: str, index: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+
+    while True:
+        byte = ord(encoded[index]) - 63
+        index += 1
+        result |= (byte & 0x1F) << shift
+        shift += 5
+        if byte < 0x20:
+            break
+
+    value = ~(result >> 1) if result & 1 else result >> 1
+    return value, index
 
 
 def haversine_km(origin: Coordinate, destination: Coordinate) -> float:

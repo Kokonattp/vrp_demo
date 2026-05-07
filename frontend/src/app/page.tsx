@@ -64,13 +64,16 @@ const panels = [
   { id: "run", label: "ออเดอร์และคำนวณ", icon: Play }
 ] as const;
 
-function statusLabel(value: ScenarioResult["status"] | "warming" | "ready" | "offline") {
+type OptimizerState = "warming" | "ready" | "traffic" | "offline";
+
+function statusLabel(value: ScenarioResult["status"] | OptimizerState) {
   const labels = {
     optimized: "คำนวณแล้ว",
     fallback: "ประมาณการ",
     infeasible: "จัดไม่ได้",
     warming: "กำลังปลุก",
     ready: "พร้อมใช้",
+    traffic: "จราจรจริง",
     offline: "ออฟไลน์"
   };
   return labels[value];
@@ -352,7 +355,7 @@ export default function Home() {
   const [csvText, setCsvText] = useState(() => buildBranchCsvTemplate(todayDate()));
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
-  const [optimizerState, setOptimizerState] = useState<"warming" | "ready" | "offline">("warming");
+  const [optimizerState, setOptimizerState] = useState<OptimizerState>("warming");
   const [scenarioName, setScenarioName] = useState("morning-wave");
   const [showGuide, setShowGuide] = useState(false);
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
@@ -449,8 +452,15 @@ export default function Home() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 12000);
 
-    fetch(`${API_URL}/health`, { signal: controller.signal })
-      .then((response) => setOptimizerState(response.ok ? "ready" : "offline"))
+    fetch(`${API_URL}/api/health`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          setOptimizerState("offline");
+          return;
+        }
+        const health = (await response.json()) as { trafficAware?: boolean; routingProvider?: string };
+        setOptimizerState(health.trafficAware || health.routingProvider === "google" ? "traffic" : "ready");
+      })
       .catch(() => setOptimizerState("offline"))
       .finally(() => window.clearTimeout(timer));
 
@@ -488,7 +498,7 @@ export default function Home() {
       });
       if (!response.ok) throw new Error(`Optimizer returned ${response.status}`);
       const optimized = (await response.json()) as ScenarioResult;
-      setOptimizerState("ready");
+      setOptimizerState((current) => (current === "traffic" ? "traffic" : "ready"));
       setResult(optimized);
       setHasCalculatedRoute(true);
       setComparison((current) => [optimized, ...current.filter((item) => item.scenarioId !== optimized.scenarioId)].slice(0, 4));
@@ -763,7 +773,7 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant={optimizerState === "ready" ? "success" : "muted"}>{statusLabel(optimizerState)}</Badge>
+          <Badge variant={optimizerState === "ready" || optimizerState === "traffic" ? "success" : "muted"}>{statusLabel(optimizerState)}</Badge>
           <Button variant="outline" size="sm" onClick={() => setShowGuide(true)}>
             <CircleHelp className="h-4 w-4" />
             วิธีใช้
