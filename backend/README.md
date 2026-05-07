@@ -28,6 +28,7 @@ For traffic-aware VRP analysis, enable Google Routes API:
 ROUTING_PROVIDER=google
 GOOGLE_MAPS_API_KEY=your_google_maps_key
 GOOGLE_ROUTING_PREFERENCE=TRAFFIC_AWARE
+GOOGLE_TRAFFIC_BUCKETS=08:00,09:00,10:00,13:00,15:00,17:00
 ```
 
-Google mode uses `Compute Route Matrix` for traffic-aware travel times in OR-Tools and `computeRoutes` for road-following map polylines.
+Google mode uses `Compute Route Matrix` for traffic-aware travel times in OR-Tools and `computeRoutes` for road-following map polylines. Fixed-time stops use the closest traffic bucket; flexible stops use the best available bucket and get a lower adjacency cost when they are near a fixed-time anchor.

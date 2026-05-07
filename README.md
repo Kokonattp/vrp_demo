@@ -89,9 +89,10 @@ OSRM follows real roads, but does not include live traffic. For traffic-aware VR
 $env:ROUTING_PROVIDER="google"
 $env:GOOGLE_MAPS_API_KEY="your_google_maps_key"
 $env:GOOGLE_ROUTING_PREFERENCE="TRAFFIC_AWARE"
+$env:GOOGLE_TRAFFIC_BUCKETS="08:00,09:00,10:00,13:00,15:00,17:00"
 ```
 
-With Google routing enabled, the optimizer matrix uses traffic-aware travel duration, and map route lines use Google road polylines. If Google routing is unavailable, the backend falls back to OSRM when configured, then to a haversine travel-time simulation so the studio remains usable offline.
+With Google routing enabled, the optimizer matrix uses traffic-aware travel duration, and map route lines use Google road polylines. Fixed-time stops use the traffic bucket closest to their time window; flexible stops can use the best bucket and are encouraged to cluster before/after nearby fixed-time anchors. If Google routing is unavailable, the backend falls back to OSRM when configured, then to a haversine travel-time simulation so the studio remains usable offline.
 
 ## PostgreSQL
 

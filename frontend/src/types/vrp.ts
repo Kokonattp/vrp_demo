@@ -25,6 +25,7 @@ export type Order = {
   id: string;
   locationId: string;
   serviceDate: string;
+  timeMode: "fixed" | "flexible";
   weightKg: number;
   cbm: number;
   serviceMinutes: number;
@@ -56,6 +57,7 @@ export type RoutePlan = {
   loadKg: number;
   loadCbm: number;
   warnings: string[];
+  routeNotes: string[];
   geometry: Coordinate[];
 };
 

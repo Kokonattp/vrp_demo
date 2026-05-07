@@ -103,7 +103,7 @@ export function buildDriverRoutePayload({
         lat: stop.lat,
         lng: stop.lng,
         arrivalMinutes: stop.arrivalMinutes,
-        timeWindow: order ? `${order.timeWindowStart}-${order.timeWindowEnd}` : undefined,
+        timeWindow: order?.timeMode === "fixed" ? `${order.timeWindowStart}-${order.timeWindowEnd}` : order ? "ยืดหยุ่น" : undefined,
         serviceMinutes: stop.serviceMinutes,
         loadKg: stop.loadKg,
         loadCbm: stop.loadCbm,

@@ -50,11 +50,12 @@ function addDays(date: string, days: number) {
 
 function buildBranchCsvTemplate(baseDate: string) {
   return [
-    "id,name,lat,lng,address,serviceDate,demandKg,cbm,serviceMinutes,timeWindowStart,timeWindowEnd,priority",
-    `depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร,${baseDate},,,,,,`,
-    `store-silom,สาขาสีลม,13.7246,100.5347,สีลม,${baseDate},180,1.2,18,09:00,11:30,high`,
-    `store-silom,สาขาสีลม,13.7246,100.5347,สีลม,${addDays(baseDate, 1)},260,1.8,22,10:00,15:00,normal`,
-    `store-ari,สาขาอารีย์,13.7801,100.5446,พญาไท,${baseDate},240,1.6,20,10:00,14:30,normal`
+    "id,name,lat,lng,address,serviceDate,demandKg,cbm,serviceMinutes,timeMode,timeWindowStart,timeWindowEnd,priority",
+    `depot-bkk,ศูนย์กระจายสินค้ากรุงเทพ,13.7563,100.5018,กรุงเทพมหานคร,${baseDate},,,,,,,`,
+    `store-silom,สาขาสีลม,13.7246,100.5347,สีลม,${baseDate},180,1.2,18,flexible,,,high`,
+    `store-silom,สาขาสีลม,13.7246,100.5347,สีลม,${addDays(baseDate, 1)},260,1.8,22,flexible,,,normal`,
+    `store-rama9,สาขาพระราม 9,13.7579,100.5650,พระราม 9,${baseDate},210,1.3,16,fixed,09:00,09:30,high`,
+    `store-ari,สาขาอารีย์,13.7801,100.5446,พญาไท,${baseDate},240,1.6,20,flexible,,,normal`
   ].join("\n");
 }
 
@@ -162,7 +163,7 @@ function buildLocalFallback(
     loadCbm: 0
   }));
 
-  [...orders].sort((a, b) => Number(b.priority === "high") - Number(a.priority === "high")).forEach((order) => {
+  sortOrdersForAnchorClustering(orders, locations).forEach((order) => {
     const bucket = vehicleBuckets.find(
       (candidate) =>
         candidate.orders.length < candidate.vehicle.maxStops &&
@@ -207,10 +208,10 @@ function buildLocalFallback(
         routeDistance += legDistance;
         elapsed += travelMinutes;
         const stopWarnings: string[] = [];
-        if (elapsed < timeToMinutes(order.timeWindowStart)) {
+        if (order.timeMode === "fixed" && elapsed < timeToMinutes(order.timeWindowStart)) {
           elapsed = timeToMinutes(order.timeWindowStart);
         }
-        if (elapsed > timeToMinutes(order.timeWindowEnd)) {
+        if (order.timeMode === "fixed" && elapsed > timeToMinutes(order.timeWindowEnd)) {
           stopWarnings.push("เกินช่วงเวลา");
           warnings.push(`${order.id} เกินเวลาส่ง ${order.timeWindowEnd}`);
         }
@@ -254,6 +255,7 @@ function buildLocalFallback(
         loadKg: bucket.loadKg,
         loadCbm: Number(bucket.loadCbm.toFixed(1)),
         warnings,
+        routeNotes: buildLocalRouteNotes(bucket.orders, locations),
         geometry: stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }))
       };
     });
@@ -268,6 +270,64 @@ function buildLocalFallback(
     warnings: ["ใช้แผนประมาณการในเครื่อง เพราะยังติดต่อ backend OR-Tools ไม่สำเร็จ"],
     routes
   };
+}
+
+function sortOrdersForAnchorClustering(orders: Order[], locations: LocationPoint[]) {
+  const fixedOrders = orders.filter((order) => order.timeMode === "fixed" && order.timeWindowStart && order.timeWindowEnd);
+  const locationById = new Map(locations.map((location) => [location.id, location]));
+
+  return [...orders].sort((a, b) => {
+    const aKey = anchorSortKey(a, fixedOrders, locationById);
+    const bKey = anchorSortKey(b, fixedOrders, locationById);
+    return aKey[0] - bKey[0] || aKey[1] - bKey[1] || aKey[2] - bKey[2] || a.id.localeCompare(b.id);
+  });
+}
+
+function anchorSortKey(order: Order, fixedOrders: Order[], locationById: Map<string, LocationPoint>): [number, number, number] {
+  if (order.timeMode === "fixed" && order.timeWindowStart) {
+    return [0, timeToMinutes(order.timeWindowStart), 0];
+  }
+  if (fixedOrders.length) {
+    const nearest = fixedOrders.reduce(
+      (best, fixed) => {
+        const distance = distanceBetweenLocations(order.locationId, fixed.locationId, locationById);
+        return distance < best.distance ? { fixed, distance } : best;
+      },
+      { fixed: fixedOrders[0], distance: Number.POSITIVE_INFINITY }
+    );
+    return [1, timeToMinutes(nearest.fixed.timeWindowStart), Math.round(nearest.distance * 10)];
+  }
+  return [2, order.priority === "high" ? 0 : 1, 0];
+}
+
+function distanceBetweenLocations(leftId: string, rightId: string, locationById: Map<string, LocationPoint>) {
+  const left = locationById.get(leftId);
+  const right = locationById.get(rightId);
+  if (!left || !right) return Number.POSITIVE_INFINITY;
+  return distanceKm(left, right);
+}
+
+function buildLocalRouteNotes(orders: Order[], locations: LocationPoint[]) {
+  const locationById = new Map(locations.map((location) => [location.id, location]));
+  const notes: string[] = [];
+  orders.forEach((order) => {
+    if (order.timeMode !== "flexible") return;
+    const fixedOrders = orders.filter((candidate) => candidate.timeMode === "fixed" && candidate.timeWindowStart);
+    if (!fixedOrders.length) return;
+    const nearest = fixedOrders.reduce(
+      (best, fixed) => {
+        const distance = distanceBetweenLocations(order.locationId, fixed.locationId, locationById);
+        return distance < best.distance ? { fixed, distance } : best;
+      },
+      { fixed: fixedOrders[0], distance: Number.POSITIVE_INFINITY }
+    );
+    const location = locationById.get(order.locationId);
+    const anchor = locationById.get(nearest.fixed.locationId);
+    if (location && anchor && nearest.distance <= 6) {
+      notes.push(`${location.name} ถูกจัดใกล้ ${anchor.name} เพราะเป็นจุดยืดหยุ่นใกล้ anchor เวลา ${nearest.fixed.timeWindowStart}.`);
+    }
+  });
+  return notes.slice(0, 3);
 }
 
 function parseNumber(value: string | undefined, fallback: number) {
@@ -292,9 +352,10 @@ function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Orde
     const [id, name, lat, lng, address] = cells;
     const hasServiceDate = /^\d{4}-\d{2}-\d{2}$/.test(cells[5] ?? "");
     const serviceDate = hasServiceDate ? cells[5] : todayDate();
-    const [demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority] = hasServiceDate
-      ? cells.slice(6, 12)
-      : cells.slice(5, 11);
+    const values = hasServiceDate ? cells.slice(6, 13) : cells.slice(5, 12);
+    const [demandKg, cbm, serviceMinutes, timeModeCell, timeWindowStart, timeWindowEnd, priority] = values;
+    const timeMode: Order["timeMode"] =
+      timeModeCell === "fixed" || (timeWindowStart && timeWindowEnd) ? "fixed" : "flexible";
     const type: LocationPoint["type"] = index === 0 && (id || "").toLowerCase().includes("depot") ? "depot" : "store";
     const location: LocationPoint = {
         id: id || `store-${index + 1}`,
@@ -317,11 +378,12 @@ function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Orde
         id: `ord-${serviceDate}-${location.id.replace(/[^a-zA-Z0-9-]/g, "-")}`,
         locationId: location.id,
         serviceDate,
+        timeMode,
         weightKg: parseNumber(demandKg, 120),
         cbm: parseNumber(cbm, 1),
         serviceMinutes: parseNumber(serviceMinutes, 15),
-        timeWindowStart: timeWindowStart || "09:00",
-        timeWindowEnd: timeWindowEnd || "17:00",
+        timeWindowStart: timeMode === "fixed" ? timeWindowStart || "09:00" : "",
+        timeWindowEnd: timeMode === "fixed" ? timeWindowEnd || "17:00" : "",
         priority: priority === "high" ? "high" : "normal"
       });
     }
@@ -546,11 +608,12 @@ export default function Home() {
         id: `ord-${1000 + current.length + 1}`,
         locationId: store.id,
         serviceDate: planningDate,
+        timeMode: "flexible",
         weightKg: 120,
         cbm: 1,
         serviceMinutes: 15,
-        timeWindowStart: "09:00",
-        timeWindowEnd: "17:00",
+        timeWindowStart: "",
+        timeWindowEnd: "",
         priority: "normal"
       }
     ]);
@@ -603,11 +666,12 @@ export default function Home() {
       id: `ord-${planningDate}-${nextLocation.id}`,
       locationId: nextLocation.id,
       serviceDate: planningDate,
+      timeMode: "flexible",
       weightKg: 120,
       cbm: 1,
       serviceMinutes: 15,
-      timeWindowStart: "09:00",
-      timeWindowEnd: "17:00",
+      timeWindowStart: "",
+      timeWindowEnd: "",
       priority: "normal"
     };
     setLocations((current) => [...current, nextLocation]);
@@ -630,11 +694,12 @@ export default function Home() {
       id: `ord-${planningDate}-${selectedLocation.id}`,
       locationId: selectedLocation.id,
       serviceDate: planningDate,
+      timeMode: "flexible",
       weightKg: 120,
       cbm: 1,
       serviceMinutes: 15,
-      timeWindowStart: "09:00",
-      timeWindowEnd: "17:00",
+      timeWindowStart: "",
+      timeWindowEnd: "",
       priority: "normal"
     };
     const nextOrder = { ...baseOrder, ...patch };
@@ -701,7 +766,8 @@ export default function Home() {
         loadCbm,
         distanceKm: Number(routeDistance.toFixed(1)),
         durationMinutes: Math.round((routeDistance / 28) * 60 + orderStops.reduce((sum, stop) => sum + stop.serviceMinutes, 0)),
-        warnings
+        warnings,
+        routeNotes: route.routeNotes ?? []
       };
     });
     setResult((current) => ({
@@ -868,7 +934,7 @@ export default function Home() {
               <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>นำเข้าพิกัดสาขา</CardTitle>
-                  <CardDescription>id, name, lat, lng, address, serviceDate, demandKg, cbm, serviceMinutes, timeWindowStart, timeWindowEnd, priority</CardDescription>
+                  <CardDescription>id, name, lat, lng, address, serviceDate, demandKg, cbm, serviceMinutes, timeMode, timeWindowStart, timeWindowEnd, priority</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Field label="วันที่วางแผน">
@@ -962,6 +1028,22 @@ export default function Home() {
                               onChange={(event) => updateSelectedBranchOrder({ serviceMinutes: Number(event.target.value) })}
                             />
                           </Field>
+                          <Field label="โหมดเวลา">
+                            <select
+                              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                              value={selectedBranchOrder?.timeMode ?? "flexible"}
+                              onChange={(event) =>
+                                updateSelectedBranchOrder({
+                                  timeMode: event.target.value === "fixed" ? "fixed" : "flexible",
+                                  timeWindowStart: event.target.value === "fixed" ? selectedBranchOrder?.timeWindowStart || "09:00" : "",
+                                  timeWindowEnd: event.target.value === "fixed" ? selectedBranchOrder?.timeWindowEnd || "10:00" : ""
+                                })
+                              }
+                            >
+                              <option value="flexible">ยืดหยุ่น</option>
+                              <option value="fixed">กำหนดเวลา</option>
+                            </select>
+                          </Field>
                           <Field label="ความด่วน">
                             <select
                               className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -975,14 +1057,16 @@ export default function Home() {
                           <Field label="เริ่มส่ง">
                             <Input
                               type="time"
-                              value={selectedBranchOrder?.timeWindowStart ?? "09:00"}
+                              disabled={(selectedBranchOrder?.timeMode ?? "flexible") === "flexible"}
+                              value={selectedBranchOrder?.timeWindowStart ?? ""}
                               onChange={(event) => updateSelectedBranchOrder({ timeWindowStart: event.target.value })}
                             />
                           </Field>
                           <Field label="สิ้นสุดส่ง">
                             <Input
                               type="time"
-                              value={selectedBranchOrder?.timeWindowEnd ?? "17:00"}
+                              disabled={(selectedBranchOrder?.timeMode ?? "flexible") === "flexible"}
+                              value={selectedBranchOrder?.timeWindowEnd ?? ""}
                               onChange={(event) => updateSelectedBranchOrder({ timeWindowEnd: event.target.value })}
                             />
                           </Field>
@@ -1185,6 +1269,13 @@ export default function Home() {
                     <RouteMetric label="เวลา" value={`${route.durationMinutes} นาที`} />
                     <RouteMetric label="น้ำหนัก" value={`${Math.round(route.loadKg)} กก.`} />
                   </div>
+                  {(route.routeNotes ?? []).length > 0 && (
+                    <div className="space-y-1 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-950">
+                      {(route.routeNotes ?? []).map((note) => (
+                        <p key={note}>{note}</p>
+                      ))}
+                    </div>
+                  )}
                   <div className="space-y-1">
                     {displayStops.map((stop, index) => (
                       <div key={`${route.vehicleId}-${stop.locationId}-${index}`} className="flex items-center gap-2 text-xs">

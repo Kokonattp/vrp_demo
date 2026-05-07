@@ -21,6 +21,14 @@ OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "https://router.project-osrm.org").rs
 ROUTING_PROVIDER = os.getenv("ROUTING_PROVIDER", "osrm").strip().lower()
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 GOOGLE_ROUTING_PREFERENCE = os.getenv("GOOGLE_ROUTING_PREFERENCE", "TRAFFIC_AWARE").strip().upper()
+GOOGLE_TRAFFIC_BUCKETS = [
+    value.strip()
+    for value in os.getenv("GOOGLE_TRAFFIC_BUCKETS", "08:00,09:00,10:00,13:00,15:00,17:00").split(",")
+    if value.strip()
+]
+GOOGLE_TRAFFIC_TIMEZONE_OFFSET = os.getenv("GOOGLE_TRAFFIC_TIMEZONE_OFFSET", "+07:00").strip()
+ANCHOR_CLUSTER_MAX_KM = float(os.getenv("ANCHOR_CLUSTER_MAX_KM", "6"))
+ANCHOR_CLUSTER_MAX_MINUTES = int(os.getenv("ANCHOR_CLUSTER_MAX_MINUTES", "25"))
 FRONTEND_ORIGINS = [
     origin.strip()
     for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
@@ -55,6 +63,7 @@ class Order(BaseModel):
     id: str
     locationId: str
     serviceDate: str | None = None
+    timeMode: Literal["fixed", "flexible"] = "fixed"
     weightKg: float
     cbm: float
     serviceMinutes: int
@@ -94,6 +103,7 @@ class RoutePlan(BaseModel):
     loadKg: float
     loadCbm: float
     warnings: list[str]
+    routeNotes: list[str] = Field(default_factory=list)
     geometry: list[Coordinate]
 
 
@@ -173,17 +183,19 @@ async def optimize(request: OptimizeRequest):
             nodes.append(location)
             node_orders.append(order)
 
-    distance_matrix, duration_matrix, routing_warning = await build_matrices(nodes)
+    distance_matrix, duration_matrix, routing_warning = await build_matrices(nodes, node_orders)
     if pywrapcp is None:
         return build_greedy_result(request, nodes, node_orders, distance_matrix, duration_matrix, routing_warning)
 
     manager = pywrapcp.RoutingIndexManager(len(nodes), len(request.vehicles), [0] * len(request.vehicles), [0] * len(request.vehicles))
     routing = pywrapcp.RoutingModel(manager)
 
+    cost_matrix = build_cost_matrix(distance_matrix, duration_matrix, node_orders)
+
     def distance_callback(from_index: int, to_index: int) -> int:
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
-        return int(distance_matrix[from_node][to_node] * 1000)
+        return cost_matrix[from_node][to_node]
 
     transit_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_index)
@@ -227,7 +239,7 @@ async def optimize(request: OptimizeRequest):
 
     for node_index, order in enumerate(node_orders):
         index = manager.NodeToIndex(node_index)
-        if order:
+        if order and is_fixed_order(order):
             start = time_to_minutes(order.timeWindowStart)
             end = time_to_minutes(order.timeWindowEnd)
             time_dimension.CumulVar(index).SetRange(start, end)
@@ -267,9 +279,11 @@ async def optimize(request: OptimizeRequest):
     return result
 
 
-async def build_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]], list[list[int]], str | None]:
+async def build_matrices(
+    nodes: list[LocationPoint], node_orders: list[Order | None]
+) -> tuple[list[list[float]], list[list[int]], str | None]:
     if active_routing_provider() == "google":
-        google_result = await build_google_matrices(nodes)
+        google_result = await build_google_traffic_matrices(nodes, node_orders)
         if google_result:
             return google_result
         if not OSRM_BASE_URL:
@@ -295,6 +309,29 @@ async def build_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]],
     return build_simulated_matrices(nodes, "Routing API unavailable; simulated travel matrix used.")
 
 
+async def build_google_traffic_matrices(
+    nodes: list[LocationPoint], node_orders: list[Order | None]
+) -> tuple[list[list[float]], list[list[int]], str | None] | None:
+    service_date = next((order.serviceDate for order in node_orders if order and order.serviceDate), None)
+    bucket_times = GOOGLE_TRAFFIC_BUCKETS or ["08:00"]
+    bucket_results: list[tuple[str, list[list[float]], list[list[int]]]] = []
+
+    for bucket in bucket_times:
+        departure_time = google_departure_time(service_date, bucket)
+        result = await build_google_matrices(nodes, departure_time)
+        if result:
+            distances, durations, _ = result
+            bucket_results.append((bucket, distances, durations))
+
+    if not bucket_results:
+        return None
+
+    distances = bucket_results[0][1]
+    durations = merge_traffic_bucket_durations(bucket_results, node_orders)
+    warning = f"Google traffic-aware routing used with time buckets: {', '.join(bucket for bucket, _, _ in bucket_results)}."
+    return distances, durations, warning
+
+
 def build_simulated_matrices(nodes: list[LocationPoint], warning: str) -> tuple[list[list[float]], list[list[int]], str]:
     distances: list[list[float]] = []
     durations: list[list[int]] = []
@@ -310,7 +347,9 @@ def build_simulated_matrices(nodes: list[LocationPoint], warning: str) -> tuple[
     return distances, durations, warning
 
 
-async def build_google_matrices(nodes: list[LocationPoint]) -> tuple[list[list[float]], list[list[int]], str | None] | None:
+async def build_google_matrices(
+    nodes: list[LocationPoint], departure_time: str | None = None
+) -> tuple[list[list[float]], list[list[int]], str | None] | None:
     if not GOOGLE_MAPS_API_KEY:
         return None
 
@@ -324,7 +363,7 @@ async def build_google_matrices(nodes: list[LocationPoint]) -> tuple[list[list[f
         "destinations": [{"waypoint": google_waypoint(node)} for node in nodes],
         "travelMode": "DRIVE",
         "routingPreference": GOOGLE_ROUTING_PREFERENCE,
-        "departureTime": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "departureTime": departure_time or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     headers = {
         "Content-Type": "application/json",
@@ -353,6 +392,147 @@ async def build_google_matrices(nodes: list[LocationPoint]) -> tuple[list[list[f
         durations[origin_index][destination_index] = max(0, round(duration_seconds / 60))
 
     return distances, durations, None
+
+
+def merge_traffic_bucket_durations(
+    bucket_results: list[tuple[str, list[list[float]], list[list[int]]]], node_orders: list[Order | None]
+) -> list[list[int]]:
+    size = len(node_orders)
+    merged = [[0 for _ in range(size)] for _ in range(size)]
+
+    for origin_index in range(size):
+        for destination_index in range(size):
+            destination_order = node_orders[destination_index]
+            if origin_index == destination_index:
+                merged[origin_index][destination_index] = 0
+            elif destination_order and is_fixed_order(destination_order):
+                bucket_index = closest_bucket_index(destination_order.timeWindowStart, bucket_results)
+                merged[origin_index][destination_index] = bucket_results[bucket_index][2][origin_index][destination_index]
+            else:
+                merged[origin_index][destination_index] = min(
+                    bucket[2][origin_index][destination_index] for bucket in bucket_results
+                )
+
+    return merged
+
+
+def closest_bucket_index(time_value: str, bucket_results: list[tuple[str, list[list[float]], list[list[int]]]]) -> int:
+    target = time_to_minutes(time_value)
+    distances = [abs(time_to_minutes(bucket) - target) for bucket, _, _ in bucket_results]
+    return distances.index(min(distances))
+
+
+def google_departure_time(service_date: str | None, clock_time: str) -> str:
+    if service_date:
+        return f"{service_date}T{clock_time}:00{GOOGLE_TRAFFIC_TIMEZONE_OFFSET}"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def build_cost_matrix(
+    distance_matrix: list[list[float]],
+    duration_matrix: list[list[int]],
+    node_orders: list[Order | None],
+) -> list[list[int]]:
+    nearest_anchor = nearest_fixed_anchor_by_node(distance_matrix, duration_matrix, node_orders)
+    size = len(node_orders)
+    costs = [[0 for _ in range(size)] for _ in range(size)]
+
+    for origin in range(size):
+        for destination in range(size):
+            if origin == destination:
+                costs[origin][destination] = 0
+                continue
+            base_cost = int(distance_matrix[origin][destination] * 1000 + duration_matrix[origin][destination] * 60)
+            origin_order = node_orders[origin]
+            destination_order = node_orders[destination]
+            cluster_factor = 1.0
+
+            if is_flexible_order(origin_order) and is_fixed_order(destination_order) and is_near_anchor(origin, destination, distance_matrix, duration_matrix):
+                cluster_factor = 0.62
+            elif is_fixed_order(origin_order) and is_flexible_order(destination_order) and is_near_anchor(origin, destination, distance_matrix, duration_matrix):
+                cluster_factor = 0.62
+            elif is_flexible_order(origin_order) and is_flexible_order(destination_order):
+                origin_anchor = nearest_anchor.get(origin)
+                destination_anchor = nearest_anchor.get(destination)
+                if origin_anchor and destination_anchor and origin_anchor[0] == destination_anchor[0]:
+                    cluster_factor = 0.72
+
+            costs[origin][destination] = max(1, int(base_cost * cluster_factor))
+
+    return costs
+
+
+def nearest_fixed_anchor_by_node(
+    distance_matrix: list[list[float]],
+    duration_matrix: list[list[int]],
+    node_orders: list[Order | None],
+) -> dict[int, tuple[int, float, int]]:
+    anchors = [index for index, order in enumerate(node_orders) if is_fixed_order(order)]
+    nearest: dict[int, tuple[int, float, int]] = {}
+
+    for index, order in enumerate(node_orders):
+        if not is_flexible_order(order):
+            continue
+        candidates = [
+            (anchor, distance_matrix[index][anchor], duration_matrix[index][anchor])
+            for anchor in anchors
+            if is_near_anchor(index, anchor, distance_matrix, duration_matrix)
+        ]
+        if candidates:
+            nearest[index] = min(candidates, key=lambda item: (item[2], item[1]))
+
+    return nearest
+
+
+def route_cluster_notes(
+    route_nodes: list[int],
+    nodes: list[LocationPoint],
+    node_orders: list[Order | None],
+    distance_matrix: list[list[float]],
+    duration_matrix: list[list[int]],
+) -> list[str]:
+    notes: list[str] = []
+    seen: set[tuple[int, int]] = set()
+
+    for left, right in zip(route_nodes, route_nodes[1:]):
+        left_order = node_orders[left]
+        right_order = node_orders[right]
+        if is_flexible_order(left_order) and is_fixed_order(right_order) and is_near_anchor(left, right, distance_matrix, duration_matrix):
+            key = (left, right)
+            if key not in seen:
+                notes.append(
+                    f"{nodes[left].name} ถูกจัดก่อน {nodes[right].name} เพราะเป็นจุดยืดหยุ่นที่อยู่ใกล้ anchor เวลา {right_order.timeWindowStart}."
+                )
+                seen.add(key)
+        elif is_fixed_order(left_order) and is_flexible_order(right_order) and is_near_anchor(left, right, distance_matrix, duration_matrix):
+            key = (left, right)
+            if key not in seen:
+                notes.append(
+                    f"{nodes[right].name} ถูกจัดต่อจาก {nodes[left].name} เพราะอยู่ใกล้จุดที่กำหนดเวลา {left_order.timeWindowStart}."
+                )
+                seen.add(key)
+
+    return notes[:3]
+
+
+def is_near_anchor(
+    origin: int,
+    destination: int,
+    distance_matrix: list[list[float]],
+    duration_matrix: list[list[int]],
+) -> bool:
+    return (
+        distance_matrix[origin][destination] <= ANCHOR_CLUSTER_MAX_KM
+        or duration_matrix[origin][destination] <= ANCHOR_CLUSTER_MAX_MINUTES
+    )
+
+
+def is_fixed_order(order: Order | None) -> bool:
+    return bool(order and order.timeMode == "fixed" and order.timeWindowStart and order.timeWindowEnd)
+
+
+def is_flexible_order(order: Order | None) -> bool:
+    return bool(order and order.timeMode == "flexible")
 
 
 async def build_solution_result(
@@ -430,6 +610,7 @@ async def build_solution_result(
             warnings.append(f"{vehicle.name} max stops exceeded")
 
         geometry = await build_route_geometry([nodes[node] for node in route_nodes])
+        route_notes = route_cluster_notes(route_nodes, nodes, node_orders, distance_matrix, duration_matrix)
         routes.append(
             RoutePlan(
                 vehicleId=vehicle.id,
@@ -441,6 +622,7 @@ async def build_solution_result(
                 loadKg=round(load_kg, 1),
                 loadCbm=round(load_cbm, 1),
                 warnings=warnings,
+                routeNotes=route_notes,
                 geometry=geometry,
             )
         )
@@ -469,7 +651,7 @@ def build_greedy_result(
 ) -> ScenarioResult:
     vehicle_loads = [{"orders": [], "kg": 0.0, "cbm": 0.0} for _ in request.vehicles]
     unassigned: list[str] = []
-    prioritized_orders = sorted(request.orders, key=lambda order: order.priority != "high")
+    prioritized_orders = sort_orders_for_anchor_clustering(request.orders, request.locations)
     for order in prioritized_orders:
         placed = False
         for index, vehicle in enumerate(request.vehicles):
@@ -512,9 +694,9 @@ def build_greedy_result(
             if order:
                 load_kg += order.weightKg
                 load_cbm += order.cbm
-                if elapsed < time_to_minutes(order.timeWindowStart):
+                if is_fixed_order(order) and elapsed < time_to_minutes(order.timeWindowStart):
                     elapsed = time_to_minutes(order.timeWindowStart)
-                if elapsed > time_to_minutes(order.timeWindowEnd):
+                if is_fixed_order(order) and elapsed > time_to_minutes(order.timeWindowEnd):
                     stop_warnings.append("Time window")
                     warnings.append(f"{order.id} misses {order.timeWindowEnd}")
                 elapsed += order.serviceMinutes
@@ -543,6 +725,7 @@ def build_greedy_result(
                 loadKg=round(load_kg, 1),
                 loadCbm=round(load_cbm, 1),
                 warnings=warnings,
+                routeNotes=greedy_route_notes(route_locations, bucket["orders"]),
                 geometry=[Coordinate(lat=location.lat, lng=location.lng) for location in route_locations],
             )
         )
@@ -558,6 +741,59 @@ def build_greedy_result(
         warnings=warnings,
         routes=routes,
     )
+
+
+def sort_orders_for_anchor_clustering(
+    orders: list[Order],
+    locations: list[LocationPoint],
+) -> list[Order]:
+    location_by_id = {location.id: location for location in locations}
+    fixed_orders = [order for order in orders if is_fixed_order(order)]
+
+    def order_key(order: Order) -> tuple[int, int, float, str]:
+        if is_fixed_order(order):
+            return (0, time_to_minutes(order.timeWindowStart), 0, order.id)
+        if fixed_orders:
+            nearest_fixed = min(
+                fixed_orders,
+                key=lambda fixed: distance_between_locations(order.locationId, fixed.locationId, location_by_id),
+            )
+            return (
+                1,
+                time_to_minutes(nearest_fixed.timeWindowStart),
+                distance_between_locations(order.locationId, nearest_fixed.locationId, location_by_id),
+                order.id,
+            )
+        return (2, 0 if order.priority == "high" else 1, 0, order.id)
+
+    return sorted(orders, key=order_key)
+
+
+def distance_between_locations(
+    left_location_id: str,
+    right_location_id: str,
+    location_by_id: dict[str, LocationPoint],
+) -> float:
+    left = location_by_id.get(left_location_id)
+    right = location_by_id.get(right_location_id)
+    if left is None or right is None:
+        return 9999
+    return haversine_km(left, right)
+
+
+def greedy_route_notes(route_locations: list[LocationPoint], route_orders: list[Order]) -> list[str]:
+    order_by_location_id = {order.locationId: order for order in route_orders}
+    notes: list[str] = []
+
+    for previous, current in zip(route_locations, route_locations[1:]):
+        previous_order = order_by_location_id.get(previous.id)
+        current_order = order_by_location_id.get(current.id)
+        if is_fixed_order(previous_order) and is_flexible_order(current_order):
+            notes.append(f"{current.name} ถูกจัดต่อจาก {previous.name} เพราะเป็นจุดยืดหยุ่นใกล้ anchor เวลา {previous_order.timeWindowStart}.")
+        elif is_flexible_order(previous_order) and is_fixed_order(current_order):
+            notes.append(f"{previous.name} ถูกจัดก่อน {current.name} เพราะเป็นจุดยืดหยุ่นใกล้ anchor เวลา {current_order.timeWindowStart}.")
+
+    return notes[:3]
 
 
 async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate]:

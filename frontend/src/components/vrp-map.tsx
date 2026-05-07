@@ -107,6 +107,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         serviceMinutes: number;
         serviceDates: string[];
         timeWindows: string[];
+        hasFixedTime: boolean;
         priorities: Set<Order["priority"]>;
       }
     >();
@@ -119,7 +120,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         existing.cbm += order.cbm;
         existing.serviceMinutes += order.serviceMinutes;
         existing.serviceDates.push(order.serviceDate);
-        existing.timeWindows.push(`${order.timeWindowStart}-${order.timeWindowEnd}`);
+        if (order.timeMode === "fixed") existing.timeWindows.push(`${order.timeWindowStart}-${order.timeWindowEnd}`);
+        existing.hasFixedTime = existing.hasFixedTime || order.timeMode === "fixed";
         existing.priorities.add(order.priority);
         return;
       }
@@ -129,7 +131,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         cbm: order.cbm,
         serviceMinutes: order.serviceMinutes,
         serviceDates: [order.serviceDate],
-        timeWindows: [`${order.timeWindowStart}-${order.timeWindowEnd}`],
+        timeWindows: order.timeMode === "fixed" ? [`${order.timeWindowStart}-${order.timeWindowEnd}`] : [],
+        hasFixedTime: order.timeMode === "fixed",
         priorities: new Set([order.priority])
       });
     });
@@ -198,7 +201,11 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
         ? `<span>วันที่งานส่ง: ${escapeHtml(Array.from(new Set(orderSummary.serviceDates)).join(", "))}</span>`
         : "";
       const serviceText = orderSummary
-        ? `<span>เวลาบริการ: ${orderSummary.serviceMinutes} นาที · ช่วงส่ง: ${escapeHtml(Array.from(new Set(orderSummary.timeWindows)).join(", "))}</span>`
+        ? `<span>เวลาบริการ: ${orderSummary.serviceMinutes} นาที · ${
+            orderSummary.hasFixedTime
+              ? `ช่วงส่ง: ${escapeHtml(Array.from(new Set(orderSummary.timeWindows)).join(", "))}`
+              : "ยืดหยุ่น: ระบบเลือกช่วงที่เหมาะกับ route"
+          }</span>`
         : "";
       const priorityText = orderSummary
         ? `<span>ระดับ: ${orderSummary.priorities.has("high") ? "ด่วน" : "ปกติ"}</span>`
