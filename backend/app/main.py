@@ -35,6 +35,7 @@ MAPBOX_TRAFFIC_BUCKETS = [
     if value.strip()
 ]
 MAPBOX_TRAFFIC_TIMEZONE_OFFSET = os.getenv("MAPBOX_TRAFFIC_TIMEZONE_OFFSET", "+07:00").strip()
+MAPBOX_MATRIX_BATCH_SIZE = os.getenv("MAPBOX_MATRIX_BATCH_SIZE", "0").strip()
 ANCHOR_CLUSTER_MAX_KM = float(os.getenv("ANCHOR_CLUSTER_MAX_KM", "6"))
 ANCHOR_CLUSTER_MAX_MINUTES = int(os.getenv("ANCHOR_CLUSTER_MAX_MINUTES", "25"))
 FRONTEND_ORIGINS = [
@@ -402,22 +403,30 @@ async def build_mapbox_traffic_matrices(
     if active_routing_profile_is_traffic_aware():
         bucket_times = MAPBOX_TRAFFIC_BUCKETS or ["08:00"]
         bucket_results: list[tuple[str, list[list[float]], list[list[int]]]] = []
+        bucket_warnings: list[str] = []
         for bucket in bucket_times:
             result = await build_mapbox_matrix(nodes, mapbox_departure_time(service_date, bucket))
             if result:
-                distances, durations, _ = result
+                distances, durations, matrix_warning = result
                 bucket_results.append((bucket, distances, durations))
+                if matrix_warning and matrix_warning not in bucket_warnings:
+                    bucket_warnings.append(matrix_warning)
         if not bucket_results:
             return None
         distances = bucket_results[0][1]
         durations = merge_traffic_bucket_durations(bucket_results, node_orders)
         warning = f"Mapbox traffic-aware routing used with time buckets: {', '.join(bucket for bucket, _, _ in bucket_results)}."
+        if bucket_warnings:
+            warning = f"{warning} {' '.join(bucket_warnings)}"
         return distances, durations, warning
 
     result = await build_mapbox_matrix(nodes, None)
     if result:
-        distances, durations, _ = result
-        return distances, durations, "Mapbox road routing used without driving-traffic profile."
+        distances, durations, matrix_warning = result
+        warning = "Mapbox road routing used without driving-traffic profile."
+        if matrix_warning:
+            warning = f"{warning} {matrix_warning}"
+        return distances, durations, warning
     return None
 
 
@@ -426,16 +435,77 @@ async def build_mapbox_matrix(
 ) -> tuple[list[list[float]], list[list[int]], str | None] | None:
     if not MAPBOX_ACCESS_TOKEN or len(nodes) < 2:
         return None
-    max_coordinates = 10 if MAPBOX_PROFILE == "mapbox/driving-traffic" else 25
+    max_coordinates = mapbox_matrix_coordinate_limit()
     if len(nodes) > max_coordinates:
+        return await build_mapbox_matrix_batches(nodes, departure_time, max_coordinates)
+
+    payload = await fetch_mapbox_matrix(nodes, departure_time)
+    if not payload:
+        return None
+    raw_distances, raw_durations = payload
+    distances, durations, fallback_cells = normalize_mapbox_matrix(nodes, raw_distances, raw_durations)
+    warning = f"Mapbox matrix used simulated fallback for {fallback_cells} unreachable cells." if fallback_cells else None
+    return distances, durations, warning
+
+
+async def build_mapbox_matrix_batches(
+    nodes: list[LocationPoint],
+    departure_time: str | None,
+    coordinate_limit: int,
+) -> tuple[list[list[float]], list[list[int]], str | None] | None:
+    size = len(nodes)
+    origin_chunk_size = max(1, coordinate_limit // 2)
+    destination_chunk_size = max(1, coordinate_limit - origin_chunk_size)
+    raw_distances: list[list[float | None]] = [[None for _ in nodes] for _ in nodes]
+    raw_durations: list[list[float | None]] = [[None for _ in nodes] for _ in nodes]
+    request_count = 0
+    failed_batches = 0
+
+    for origin_indices in chunk_indices(size, origin_chunk_size):
+        for destination_indices in chunk_indices(size, destination_chunk_size):
+            subset_indices = unique_indices([*origin_indices, *destination_indices])
+            source_positions = [subset_indices.index(index) for index in origin_indices]
+            destination_positions = [subset_indices.index(index) for index in destination_indices]
+            subset_nodes = [nodes[index] for index in subset_indices]
+            payload = await fetch_mapbox_matrix(subset_nodes, departure_time, source_positions, destination_positions)
+            request_count += 1
+            if not payload:
+                failed_batches += 1
+                continue
+            batch_distances, batch_durations = payload
+            for source_row, origin_index in enumerate(origin_indices):
+                for destination_column, destination_index in enumerate(destination_indices):
+                    raw_distances[origin_index][destination_index] = cell_or_none(batch_distances, source_row, destination_column)
+                    raw_durations[origin_index][destination_index] = cell_or_none(batch_durations, source_row, destination_column)
+
+    if all(cell is None for row in raw_durations for cell in row):
         return None
 
+    distances, durations, fallback_cells = normalize_mapbox_matrix(nodes, raw_distances, raw_durations)
+    warning_parts = [f"Mapbox Matrix API batched into {request_count} requests for {size} coordinates."]
+    if fallback_cells:
+        warning_parts.append(f"{fallback_cells} cells used simulated fallback.")
+    if failed_batches:
+        warning_parts.append(f"{failed_batches} batches failed.")
+    return distances, durations, " ".join(warning_parts)
+
+
+async def fetch_mapbox_matrix(
+    nodes: list[LocationPoint],
+    departure_time: str | None = None,
+    source_positions: list[int] | None = None,
+    destination_positions: list[int] | None = None,
+) -> tuple[list[list[float | None]], list[list[float | None]]] | None:
     coordinates = ";".join(f"{node.lng},{node.lat}" for node in nodes)
     url = f"https://api.mapbox.com/directions-matrix/v1/{MAPBOX_PROFILE}/{coordinates}"
     params = {
         "annotations": "distance,duration",
         "access_token": MAPBOX_ACCESS_TOKEN,
     }
+    if source_positions is not None:
+        params["sources"] = ";".join(str(index) for index in source_positions)
+    if destination_positions is not None:
+        params["destinations"] = ";".join(str(index) for index in destination_positions)
     if departure_time and MAPBOX_PROFILE == "mapbox/driving-traffic":
         params["depart_at"] = departure_time
 
@@ -449,18 +519,26 @@ async def build_mapbox_matrix(
 
     if payload.get("code") not in (None, "Ok", "NoRoute"):
         return None
+    return payload.get("distances") or [], payload.get("durations") or []
 
+
+def normalize_mapbox_matrix(
+    nodes: list[LocationPoint],
+    raw_distances: list[list[float | None]],
+    raw_durations: list[list[float | None]],
+) -> tuple[list[list[float]], list[list[int]], int]:
     simulated_distances, simulated_durations, _ = build_simulated_matrices(nodes, "")
-    raw_distances = payload.get("distances") or []
-    raw_durations = payload.get("durations") or []
     distances: list[list[float]] = []
     durations: list[list[int]] = []
+    fallback_cells = 0
     for origin_index in range(len(nodes)):
         distance_row: list[float] = []
         duration_row: list[int] = []
         for destination_index in range(len(nodes)):
             distance_meters = cell_or_none(raw_distances, origin_index, destination_index)
             duration_seconds = cell_or_none(raw_durations, origin_index, destination_index)
+            if not isinstance(distance_meters, (int, float)) or not isinstance(duration_seconds, (int, float)):
+                fallback_cells += 1
             distance_row.append(
                 round(distance_meters / 1000, 2)
                 if isinstance(distance_meters, (int, float))
@@ -474,7 +552,33 @@ async def build_mapbox_matrix(
         distances.append(distance_row)
         durations.append(duration_row)
 
-    return distances, durations, None
+    return distances, durations, fallback_cells
+
+
+def mapbox_matrix_coordinate_limit() -> int:
+    provider_limit = 10 if MAPBOX_PROFILE == "mapbox/driving-traffic" else 25
+    try:
+        configured_limit = int(MAPBOX_MATRIX_BATCH_SIZE)
+    except ValueError:
+        configured_limit = 0
+    if configured_limit <= 0:
+        return provider_limit
+    return max(2, min(provider_limit, configured_limit))
+
+
+def chunk_indices(size: int, chunk_size: int) -> list[list[int]]:
+    return [list(range(start, min(start + chunk_size, size))) for start in range(0, size, chunk_size)]
+
+
+def unique_indices(indices: list[int]) -> list[int]:
+    seen: set[int] = set()
+    unique: list[int] = []
+    for index in indices:
+        if index in seen:
+            continue
+        seen.add(index)
+        unique.append(index)
+    return unique
 
 
 async def build_google_matrices(

@@ -103,7 +103,7 @@ $env:MAPBOX_PROFILE="mapbox/driving-traffic"
 $env:MAPBOX_TRAFFIC_BUCKETS="08:00,09:00,10:00,13:00,15:00,17:00"
 ```
 
-With `mapbox/driving-traffic`, matrix requests are limited to 10 coordinates by Mapbox. For larger demo sets without traffic, use `MAPBOX_PROFILE=mapbox/driving`.
+With `mapbox/driving-traffic`, each Matrix API request is limited to 10 coordinates by Mapbox. The backend now splits larger VRP matrices into source/destination batches and recombines them, so many-stop traffic-aware scenarios can still run. The tradeoff is request volume: more stops and more `MAPBOX_TRAFFIC_BUCKETS` mean more Matrix API calls. You can lower the per-request batch size with `MAPBOX_MATRIX_BATCH_SIZE` when testing rate limits. For route geometry on the map, Mapbox Directions still has waypoint limits; very large routes fall back to OSRM/simulated geometry if configured.
 
 ## Cost Model
 

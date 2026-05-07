@@ -42,7 +42,7 @@ MAPBOX_PROFILE=mapbox/driving-traffic
 MAPBOX_TRAFFIC_BUCKETS=08:00,09:00,10:00,13:00,15:00,17:00
 ```
 
-Mapbox `driving-traffic` uses live/historic traffic where covered and supports up to 10 coordinates for Matrix API requests. Use `MAPBOX_PROFILE=mapbox/driving` for up to 25 coordinates without traffic-aware durations.
+Mapbox `driving-traffic` uses live/historic traffic where covered and supports up to 10 coordinates per Matrix API request. The backend splits larger VRP matrices into source/destination batches, then recombines the full travel-time table for OR-Tools. More stops and more `MAPBOX_TRAFFIC_BUCKETS` create more Matrix API calls, so use `MAPBOX_MATRIX_BATCH_SIZE` to test smaller batches when needed. Use `MAPBOX_PROFILE=mapbox/driving` for up to 25 coordinates per request without traffic-aware durations.
 
 ## Cost Model
 
