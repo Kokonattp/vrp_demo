@@ -194,44 +194,53 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
           : routeStop
             ? `ลำดับส่งที่ ${routeStop.sequence}`
             : `ตำแหน่งที่ ${fallbackSequence}`;
-      const routeText = routeStop ? `<br/><span>รถ: ${escapeHtml(routeStop.routeName)}</span>` : "";
-      const orderText = routeStop?.orderIds.length ? `<br/><span>ออเดอร์: ${escapeHtml(routeStop.orderIds.join(", "))}</span>` : "";
-      const arrivalText = routeStop ? `<br/><span>ถึงประมาณ: ${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
-      const loadText = routeStop ? `<br/><span>ปริมาณสะสมบนรถ: ${Math.round(routeStop.loadKg)} กก., ${routeStop.loadCbm.toFixed(1)} CBM</span>` : "";
-      const warningText = routeStop?.warnings.length ? `<br/><span>เตือน: ${escapeHtml(routeStop.warnings.join(", "))}</span>` : "";
-      const addressText = location.address ? `<span>${escapeHtml(location.address)}</span>` : "<span>ไม่ได้ระบุที่อยู่</span>";
+      const routeText = routeStop ? `<span><b>รถ</b>${escapeHtml(routeStop.routeName)}</span>` : "";
+      const orderText = routeStop?.orderIds.length ? `<span><b>ออเดอร์</b>${escapeHtml(routeStop.orderIds.join(", "))}</span>` : "";
+      const arrivalText = routeStop ? `<span><b>ถึงประมาณ</b>${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
+      const loadText = routeStop ? `<span><b>สะสมบนรถ</b>${Math.round(routeStop.loadKg)} กก., ${routeStop.loadCbm.toFixed(1)} CBM</span>` : "";
+      const warningText = routeStop?.warnings.length ? `<span><b>เตือน</b>${escapeHtml(routeStop.warnings.join(", "))}</span>` : "";
+      const addressText = location.address?.trim()
+        ? `<span><b>ที่อยู่</b>${escapeHtml(location.address)}</span>`
+        : "<span><b>ที่อยู่</b>ยังไม่ได้ระบุ</span>";
+      const serviceDates = orderSummary ? Array.from(new Set(orderSummary.serviceDates.filter(Boolean))) : [];
+      const timeWindows = orderSummary ? Array.from(new Set(orderSummary.timeWindows.filter(Boolean))) : [];
       const orderSummaryText = orderSummary
-        ? `<span>ปริมาณงาน: ${orderSummary.count} ออเดอร์ · ${Math.round(orderSummary.weightKg)} กก. · ${orderSummary.cbm.toFixed(1)} CBM</span>`
+        ? `<span><b>ปริมาณงาน</b>${orderSummary.count} ออเดอร์</span><span><b>น้ำหนัก/CBM</b>${Math.round(orderSummary.weightKg)} กก. · ${orderSummary.cbm.toFixed(1)} CBM</span>`
         : "";
       const serviceDateText = orderSummary
-        ? `<span>วันที่งานส่ง: ${escapeHtml(Array.from(new Set(orderSummary.serviceDates)).join(", "))}</span>`
+        ? `<span><b>วันที่งานส่ง</b>${escapeHtml(serviceDates.join(", ") || "-")}</span>`
         : "";
       const serviceText = orderSummary
-        ? `<span>เวลาบริการ: ${orderSummary.serviceMinutes} นาที · ${
+        ? `<span><b>เวลาบริการ</b>${orderSummary.serviceMinutes} นาที</span><span><b>เวลาเข้า</b>${
             orderSummary.hasFixedTime
-              ? `ช่วงส่ง: ${escapeHtml(Array.from(new Set(orderSummary.timeWindows)).join(", "))}`
-              : "ยืดหยุ่น: ระบบเลือกช่วงที่เหมาะกับ route"
+              ? escapeHtml(timeWindows.join(", ") || "-")
+              : "ยืดหยุ่น ให้ระบบเลือกช่วงเหมาะสม"
           }</span>`
         : "";
       const priorityText = orderSummary
-        ? `<span>ระดับ: ${orderSummary.priorities.has("high") ? "ด่วน" : "ปกติ"}</span>`
+        ? `<span><b>ความด่วน</b>${orderSummary.priorities.has("high") ? "ด่วน" : "ปกติ"}</span>`
         : "";
       const popupHtml = [
         `<div class="vrp-map-popup">`,
-        `<strong>${escapeHtml(location.name)}</strong>`,
-        `<span>${locationType} · ${sequenceText}</span>`,
-        `<span>รหัส: ${escapeHtml(location.id)}</span>`,
+        `<header><strong>${escapeHtml(location.name)}</strong><span>${locationType} · ${sequenceText}</span></header>`,
+        `<section>`,
+        `<span><b>รหัส</b>${escapeHtml(location.id)}</span>`,
         addressText,
+        `<span><b>พิกัด</b>${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}</span>`,
+        `</section>`,
+        orderSummary ? `<section>` : "",
         serviceDateText,
         orderSummaryText,
         serviceText,
         priorityText,
-        routeText.replace("<br/>", ""),
-        orderText.replace("<br/>", ""),
-        arrivalText.replace("<br/>", ""),
-        loadText.replace("<br/>", ""),
-        warningText.replace("<br/>", ""),
-        `<span>พิกัด: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}</span>`,
+        orderSummary ? `</section>` : "",
+        routeStop ? `<section>` : "",
+        routeText,
+        orderText,
+        arrivalText,
+        loadText,
+        warningText,
+        routeStop ? `</section>` : "",
         `</div>`
       ].join("");
       const markerElement = document.createElement("div");

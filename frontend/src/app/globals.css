@@ -81,9 +81,9 @@
 
 .vrp-map-popup {
   display: grid;
-  min-width: 180px;
-  max-width: 260px;
-  gap: 4px;
+  min-width: 220px;
+  max-width: 300px;
+  gap: 8px;
   padding-right: 18px;
   color: #334155;
   font-family: "Prompt", "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
@@ -91,10 +91,37 @@
   line-height: 1.5;
 }
 
+.vrp-map-popup header,
+.vrp-map-popup section {
+  display: grid;
+  gap: 4px;
+}
+
 .vrp-map-popup strong {
   color: #1b2e4b;
   font-size: 13px;
   font-weight: 800;
+}
+
+.vrp-map-popup header span {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.vrp-map-popup section {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 7px;
+}
+
+.vrp-map-popup section span {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.vrp-map-popup b {
+  color: #64748b;
+  font-weight: 600;
 }
 
 .maplibregl-marker {

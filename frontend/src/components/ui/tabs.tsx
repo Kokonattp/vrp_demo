@@ -39,7 +39,7 @@ export function TabsTrigger({
       type="button"
       className={cn(
         "inline-flex items-center rounded-[20px] border border-border bg-card px-3 py-1.5 text-xs font-semibold leading-none text-primary transition-colors hover:bg-secondary",
-        selected && "border-primary bg-primary text-primary-foreground",
+        selected && "border-primary bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
         className
       )}
       onClick={() => context?.onValueChange(value)}

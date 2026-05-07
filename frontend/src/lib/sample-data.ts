@@ -22,35 +22,40 @@ export const sampleLocations: LocationPoint[] = [
     name: "สาขาสีลม",
     type: "store",
     lat: 13.7246,
-    lng: 100.5347
+    lng: 100.5347,
+    address: "สีลม, บางรัก, กรุงเทพมหานคร"
   },
   {
     id: "store-ari",
     name: "สาขาอารีย์",
     type: "store",
     lat: 13.7801,
-    lng: 100.5446
+    lng: 100.5446,
+    address: "อารีย์, พญาไท, กรุงเทพมหานคร"
   },
   {
     id: "store-thonglor",
     name: "สาขาทองหล่อ",
     type: "store",
     lat: 13.7307,
-    lng: 100.5826
+    lng: 100.5826,
+    address: "ทองหล่อ, วัฒนา, กรุงเทพมหานคร"
   },
   {
     id: "store-rama9",
     name: "สาขาพระราม 9",
     type: "store",
     lat: 13.7579,
-    lng: 100.565
+    lng: 100.565,
+    address: "พระราม 9, ห้วยขวาง, กรุงเทพมหานคร"
   },
   {
     id: "store-bangna",
     name: "สาขาบางนา",
     type: "store",
     lat: 13.6682,
-    lng: 100.6047
+    lng: 100.6047,
+    address: "บางนา, กรุงเทพมหานคร"
   }
 ];
 

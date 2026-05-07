@@ -509,7 +509,7 @@ export default function Home() {
   const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
   const [planningDate, setPlanningDate] = useState(() => todayDate());
   const csvTemplate = useMemo(() => buildBranchCsvTemplate(planningDate), [planningDate]);
-  const [csvText, setCsvText] = useState(() => buildBranchCsvTemplate(todayDate()));
+  const [csvText, setCsvText] = useState("");
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<OptimizerState>("warming");
@@ -1050,7 +1050,6 @@ export default function Home() {
               <Card className="border-slate-200">
                 <CardHeader>
                   <CardTitle>นำเข้าพิกัดสาขา</CardTitle>
-                  <CardDescription>id, name, lat, lng, address, serviceDate, demandKg, cbm, serviceMinutes, timeMode, timeWindowStart, timeWindowEnd, priority</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Field label="วันที่วางแผน">
@@ -1069,7 +1068,11 @@ export default function Home() {
                     ดาวน์โหลด template CSV
                   </Button>
                   <Input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
-                  <Textarea value={csvText} onChange={(event) => setCsvText(event.target.value)} />
+                  <Textarea
+                    value={csvText}
+                    onChange={(event) => setCsvText(event.target.value)}
+                    placeholder="วางข้อมูล CSV ที่ต้องการนำเข้า หรือกดใช้ template ของวันที่เลือก"
+                  />
                   <Button variant="outline" className="w-full" onClick={() => setCsvText(csvTemplate)}>
                     ใช้ template ของวันที่เลือก
                   </Button>
@@ -1085,7 +1088,6 @@ export default function Home() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <CardTitle>ตัวแปรสาขา</CardTitle>
-                      <CardDescription>ใช้คำนวณ VRP: พิกัด, น้ำหนัก, CBM, เวลาบริการ, ช่วงเวลาส่ง, ความด่วน</CardDescription>
                       <CardDescription>ข้อมูลด้านล่างเป็นค่าของวันที่ {planningDate}</CardDescription>
                     </div>
                     <Button variant="outline" size="sm" onClick={addBranch}>
@@ -1097,9 +1099,22 @@ export default function Home() {
                 <CardContent className="space-y-3">
                   {selectedLocation && (
                     <>
-                      <div className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
-                        เลือกสาขาจากรายการหรือคลิก marker บนแผนที่เพื่อแก้ข้อมูลจุดนั้น
-                      </div>
+                      <Field label="เลือกสาขาที่ต้องการแก้ไข">
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-semibold text-foreground"
+                          value={selectedLocation.id}
+                          onChange={(event) => setSelectedLocationId(event.target.value)}
+                        >
+                          {locations.map((location) => (
+                            <option key={location.id} value={location.id}>
+                              {location.name} · {locationTypeLabel(location.type)}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <p className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+                        คลิก marker บนแผนที่เพื่อเปิด popup และเลือกแก้ไขสาขานั้นได้เช่นกัน
+                      </p>
                       <div className="grid grid-cols-2 gap-3">
                         <Field label="รหัส">
                           <Input value={selectedLocation.id} readOnly />
