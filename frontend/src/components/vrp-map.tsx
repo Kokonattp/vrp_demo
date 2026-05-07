@@ -6,6 +6,8 @@ import type { Coordinate, LocationPoint, RoutePlan } from "@/types/vrp";
 
 const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const routeLineColor = "#1B2E4B";
+const depotMarkerColor = "#1B2E4B";
+const storeMarkerColor = "#EF4444";
 
 type VrpMapProps = {
   locations: LocationPoint[];
@@ -13,6 +15,28 @@ type VrpMapProps = {
   selectedLocationId?: string;
   onLocationMove: (id: string, coordinate: Coordinate) => void;
 };
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    };
+    return entities[char];
+  });
+}
+
+function minutesToTime(value: number) {
+  const normalized = Math.max(0, Math.round(value));
+  const hours = Math.floor(normalized / 60)
+    .toString()
+    .padStart(2, "0");
+  const minutes = (normalized % 60).toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
 
 export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }: VrpMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -26,6 +50,50 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
     locations.forEach((location) => lngLatBounds.extend([location.lng, location.lat]));
     return lngLatBounds;
   }, [locations]);
+
+  const routeStopByLocationId = useMemo(() => {
+    const stopsByLocation = new Map<
+      string,
+      {
+        routeName: string;
+        color: string;
+        sequence: number;
+        orderIds: string[];
+        arrivalMinutes: number;
+        loadKg: number;
+        loadCbm: number;
+        warnings: string[];
+      }
+    >();
+
+    routes.forEach((route) => {
+      let deliverySequence = 0;
+      route.stops.forEach((stop) => {
+        if (!stop.orderId) return;
+        deliverySequence += 1;
+        const existing = stopsByLocation.get(stop.locationId);
+        if (existing) {
+          existing.orderIds.push(stop.orderId);
+          existing.loadKg += stop.loadKg;
+          existing.loadCbm += stop.loadCbm;
+          existing.warnings.push(...stop.warnings);
+          return;
+        }
+        stopsByLocation.set(stop.locationId, {
+          routeName: route.vehicleName,
+          color: route.color,
+          sequence: deliverySequence,
+          orderIds: [stop.orderId],
+          arrivalMinutes: stop.arrivalMinutes,
+          loadKg: stop.loadKg,
+          loadCbm: stop.loadCbm,
+          warnings: [...stop.warnings]
+        });
+      });
+    });
+
+    return stopsByLocation;
+  }, [routes]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -62,27 +130,54 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
       }
     });
 
-    locations.forEach((location) => {
+    locations.forEach((location, index) => {
+      const routeStop = routeStopByLocationId.get(location.id);
+      const fallbackSequence = locations.slice(0, index + 1).filter((item) => item.type === "store").length;
+      const markerLabel = location.type === "depot" ? "D" : String(routeStop?.sequence ?? fallbackSequence);
+      const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? storeMarkerColor;
+      const locationType = location.type === "depot" ? "คลังสินค้า" : "สาขา";
+      const sequenceText =
+        location.type === "depot"
+          ? "จุดเริ่มต้น/จุดกลับคลัง"
+          : routeStop
+            ? `ลำดับส่งที่ ${routeStop.sequence}`
+            : `ตำแหน่งที่ ${fallbackSequence}`;
+      const routeText = routeStop ? `<br/><span>รถ: ${escapeHtml(routeStop.routeName)}</span>` : "";
+      const orderText = routeStop?.orderIds.length ? `<br/><span>ออเดอร์: ${escapeHtml(routeStop.orderIds.join(", "))}</span>` : "";
+      const arrivalText = routeStop ? `<br/><span>ถึงประมาณ: ${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
+      const loadText = routeStop ? `<br/><span>โหลด: ${Math.round(routeStop.loadKg)} กก., ${routeStop.loadCbm.toFixed(1)} CBM</span>` : "";
+      const warningText = routeStop?.warnings.length ? `<br/><span>เตือน: ${escapeHtml(routeStop.warnings.join(", "))}</span>` : "";
+      const popupHtml = [
+        `<strong>${escapeHtml(location.name)}</strong>`,
+        `<br/><span>${locationType} · ${sequenceText}</span>`,
+        routeText,
+        orderText,
+        arrivalText,
+        loadText,
+        warningText,
+        `<br/><span>พิกัด: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}</span>`
+      ].join("");
       const markerElement = document.createElement("div");
       markerElement.className = [
-        "grid h-7 w-7 place-items-center rounded-full border-[3px] border-white text-[10px] font-bold shadow-[0_8px_18px_rgba(15,23,42,0.12)]",
-        location.type === "depot" ? "bg-[#1B2E4B] text-white" : "bg-[#EF4444] text-white",
+        "grid h-8 w-8 place-items-center rounded-full border-[3px] border-white text-[11px] font-bold text-white shadow-[0_8px_18px_rgba(15,23,42,0.12)]",
         selectedLocationId === location.id ? "ring-4 ring-blue-500/20" : ""
       ].join(" ");
-      markerElement.textContent = location.type === "depot" ? "D" : location.name.slice(0, 1).toUpperCase();
+      markerElement.style.backgroundColor = markerColor;
+      markerElement.textContent = markerLabel;
 
       const existing = markerRef.current[location.id];
       if (existing) {
         existing.setLngLat([location.lng, location.lat]);
-        existing.setPopup(new maplibregl.Popup().setHTML(`<strong>${location.name}</strong><br/>${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`));
+        existing.setPopup(new maplibregl.Popup().setHTML(popupHtml));
         existing.getElement().className = markerElement.className;
+        existing.getElement().style.backgroundColor = markerColor;
         existing.getElement().textContent = markerElement.textContent;
         return;
       }
 
       const marker = new maplibregl.Marker({ element: markerElement, draggable: true })
         .setLngLat([location.lng, location.lat])
-        .setPopup(new maplibregl.Popup().setHTML(`<strong>${location.name}</strong><br/>${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`))
+        .setPopup(new maplibregl.Popup().setHTML(popupHtml))
         .addTo(map);
 
       marker.on("dragend", () => {
@@ -92,7 +187,7 @@ export function VrpMap({ locations, routes, selectedLocationId, onLocationMove }
 
       markerRef.current[location.id] = marker;
     });
-  }, [locations, onLocationMove, selectedLocationId]);
+  }, [locations, onLocationMove, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
