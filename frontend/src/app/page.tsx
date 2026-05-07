@@ -616,7 +616,7 @@ export default function Home() {
           return;
         }
         const health = (await response.json()) as { trafficAware?: boolean; routingProvider?: string };
-        setOptimizerState(health.trafficAware || health.routingProvider === "google" ? "traffic" : "ready");
+        setOptimizerState(health.trafficAware || health.routingProvider === "google" || health.routingProvider === "mapbox" ? "traffic" : "ready");
       })
       .catch(() => setOptimizerState("offline"))
       .finally(() => window.clearTimeout(timer));

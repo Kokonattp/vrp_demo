@@ -27,6 +27,14 @@ GOOGLE_TRAFFIC_BUCKETS = [
     if value.strip()
 ]
 GOOGLE_TRAFFIC_TIMEZONE_OFFSET = os.getenv("GOOGLE_TRAFFIC_TIMEZONE_OFFSET", "+07:00").strip()
+MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN", "").strip()
+MAPBOX_PROFILE = os.getenv("MAPBOX_PROFILE", "mapbox/driving-traffic").strip()
+MAPBOX_TRAFFIC_BUCKETS = [
+    value.strip()
+    for value in os.getenv("MAPBOX_TRAFFIC_BUCKETS", "08:00,09:00,10:00,13:00,15:00,17:00").split(",")
+    if value.strip()
+]
+MAPBOX_TRAFFIC_TIMEZONE_OFFSET = os.getenv("MAPBOX_TRAFFIC_TIMEZONE_OFFSET", "+07:00").strip()
 ANCHOR_CLUSTER_MAX_KM = float(os.getenv("ANCHOR_CLUSTER_MAX_KM", "6"))
 ANCHOR_CLUSTER_MAX_MINUTES = int(os.getenv("ANCHOR_CLUSTER_MAX_MINUTES", "25"))
 FRONTEND_ORIGINS = [
@@ -158,8 +166,8 @@ def health():
     return {
         "status": "ok",
         "routingProvider": active_routing_provider(),
-        "routingApi": bool(OSRM_BASE_URL or GOOGLE_MAPS_API_KEY),
-        "trafficAware": active_routing_provider() == "google",
+        "routingApi": bool(OSRM_BASE_URL or GOOGLE_MAPS_API_KEY or MAPBOX_ACCESS_TOKEN),
+        "trafficAware": active_routing_provider() in {"google", "mapbox"} and active_routing_profile_is_traffic_aware(),
         "ortools": pywrapcp is not None,
     }
 
@@ -322,6 +330,13 @@ async def build_matrices(
         if not OSRM_BASE_URL:
             return build_simulated_matrices(nodes, "Google traffic routing unavailable; simulated travel matrix used.")
 
+    if active_routing_provider() == "mapbox":
+        mapbox_result = await build_mapbox_traffic_matrices(nodes, node_orders)
+        if mapbox_result:
+            return mapbox_result
+        if not OSRM_BASE_URL:
+            return build_simulated_matrices(nodes, "Mapbox traffic routing unavailable; simulated travel matrix used.")
+
     if OSRM_BASE_URL:
         coordinates = ";".join(f"{node.lng},{node.lat}" for node in nodes)
         url = f"{OSRM_BASE_URL}/table/v1/driving/{coordinates}"
@@ -333,8 +348,8 @@ async def build_matrices(
                 distances = [[round(cell / 1000, 2) for cell in row] for row in payload["distances"]]
                 durations = [[max(1, round(cell / 60)) for cell in row] for row in payload["durations"]]
                 warning = None
-                if ROUTING_PROVIDER == "google":
-                    warning = "Google traffic routing unavailable; OSRM road routing used without live traffic."
+                if ROUTING_PROVIDER in {"google", "mapbox"}:
+                    warning = f"{ROUTING_PROVIDER.title()} traffic routing unavailable; OSRM road routing used without live traffic."
                 return distances, durations, warning
         except Exception:
             pass
@@ -378,6 +393,88 @@ def build_simulated_matrices(nodes: list[LocationPoint], warning: str) -> tuple[
         distances.append(distance_row)
         durations.append(duration_row)
     return distances, durations, warning
+
+
+async def build_mapbox_traffic_matrices(
+    nodes: list[LocationPoint], node_orders: list[Order | None]
+) -> tuple[list[list[float]], list[list[int]], str | None] | None:
+    service_date = next((order.serviceDate for order in node_orders if order and order.serviceDate), None)
+    if active_routing_profile_is_traffic_aware():
+        bucket_times = MAPBOX_TRAFFIC_BUCKETS or ["08:00"]
+        bucket_results: list[tuple[str, list[list[float]], list[list[int]]]] = []
+        for bucket in bucket_times:
+            result = await build_mapbox_matrix(nodes, mapbox_departure_time(service_date, bucket))
+            if result:
+                distances, durations, _ = result
+                bucket_results.append((bucket, distances, durations))
+        if not bucket_results:
+            return None
+        distances = bucket_results[0][1]
+        durations = merge_traffic_bucket_durations(bucket_results, node_orders)
+        warning = f"Mapbox traffic-aware routing used with time buckets: {', '.join(bucket for bucket, _, _ in bucket_results)}."
+        return distances, durations, warning
+
+    result = await build_mapbox_matrix(nodes, None)
+    if result:
+        distances, durations, _ = result
+        return distances, durations, "Mapbox road routing used without driving-traffic profile."
+    return None
+
+
+async def build_mapbox_matrix(
+    nodes: list[LocationPoint], departure_time: str | None = None
+) -> tuple[list[list[float]], list[list[int]], str | None] | None:
+    if not MAPBOX_ACCESS_TOKEN or len(nodes) < 2:
+        return None
+    max_coordinates = 10 if MAPBOX_PROFILE == "mapbox/driving-traffic" else 25
+    if len(nodes) > max_coordinates:
+        return None
+
+    coordinates = ";".join(f"{node.lng},{node.lat}" for node in nodes)
+    url = f"https://api.mapbox.com/directions-matrix/v1/{MAPBOX_PROFILE}/{coordinates}"
+    params = {
+        "annotations": "distance,duration",
+        "access_token": MAPBOX_ACCESS_TOKEN,
+    }
+    if departure_time and MAPBOX_PROFILE == "mapbox/driving-traffic":
+        params["depart_at"] = departure_time
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return None
+
+    if payload.get("code") not in (None, "Ok", "NoRoute"):
+        return None
+
+    simulated_distances, simulated_durations, _ = build_simulated_matrices(nodes, "")
+    raw_distances = payload.get("distances") or []
+    raw_durations = payload.get("durations") or []
+    distances: list[list[float]] = []
+    durations: list[list[int]] = []
+    for origin_index in range(len(nodes)):
+        distance_row: list[float] = []
+        duration_row: list[int] = []
+        for destination_index in range(len(nodes)):
+            distance_meters = cell_or_none(raw_distances, origin_index, destination_index)
+            duration_seconds = cell_or_none(raw_durations, origin_index, destination_index)
+            distance_row.append(
+                round(distance_meters / 1000, 2)
+                if isinstance(distance_meters, (int, float))
+                else simulated_distances[origin_index][destination_index]
+            )
+            duration_row.append(
+                max(0, round(duration_seconds / 60))
+                if isinstance(duration_seconds, (int, float))
+                else simulated_durations[origin_index][destination_index]
+            )
+        distances.append(distance_row)
+        durations.append(duration_row)
+
+    return distances, durations, None
 
 
 async def build_google_matrices(
@@ -459,6 +556,19 @@ def google_departure_time(service_date: str | None, clock_time: str) -> str:
     if service_date:
         return f"{service_date}T{clock_time}:00{GOOGLE_TRAFFIC_TIMEZONE_OFFSET}"
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def mapbox_departure_time(service_date: str | None, clock_time: str) -> str:
+    if service_date:
+        return f"{service_date}T{clock_time}:00{MAPBOX_TRAFFIC_TIMEZONE_OFFSET}"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def cell_or_none(rows: list, row_index: int, column_index: int):
+    try:
+        return rows[row_index][column_index]
+    except (IndexError, TypeError):
+        return None
 
 
 def build_cost_matrix(
@@ -940,6 +1050,11 @@ async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordin
         if google_geometry:
             return google_geometry
 
+    if active_routing_provider() == "mapbox" and len(route_nodes) > 1:
+        mapbox_geometry = await build_mapbox_route_geometry(route_nodes)
+        if mapbox_geometry:
+            return mapbox_geometry
+
     if OSRM_BASE_URL and len(route_nodes) > 1:
         coordinates = ";".join(f"{node.lng},{node.lat}" for node in route_nodes)
         url = f"{OSRM_BASE_URL}/route/v1/driving/{coordinates}"
@@ -953,6 +1068,31 @@ async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordin
         except Exception:
             pass
     return [Coordinate(lat=node.lat, lng=node.lng) for node in route_nodes]
+
+
+async def build_mapbox_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate] | None:
+    if not MAPBOX_ACCESS_TOKEN or len(route_nodes) < 2 or len(route_nodes) > 25:
+        return None
+
+    coordinates = ";".join(f"{node.lng},{node.lat}" for node in route_nodes)
+    url = f"https://api.mapbox.com/directions/v5/{MAPBOX_PROFILE}/{coordinates}"
+    params = {
+        "access_token": MAPBOX_ACCESS_TOKEN,
+        "geometries": "geojson",
+        "overview": "full",
+    }
+    if MAPBOX_PROFILE == "mapbox/driving-traffic":
+        params["depart_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+            line = payload["routes"][0]["geometry"]["coordinates"]
+            return [Coordinate(lat=lat, lng=lng) for lng, lat in line]
+    except Exception:
+        return None
 
 
 async def build_google_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate] | None:
@@ -990,9 +1130,19 @@ async def build_google_route_geometry(route_nodes: list[LocationPoint]) -> list[
 def active_routing_provider() -> str:
     if ROUTING_PROVIDER == "google" and GOOGLE_MAPS_API_KEY:
         return "google"
+    if ROUTING_PROVIDER == "mapbox" and MAPBOX_ACCESS_TOKEN:
+        return "mapbox"
     if OSRM_BASE_URL:
         return "osrm"
     return "simulated"
+
+
+def active_routing_profile_is_traffic_aware() -> bool:
+    if active_routing_provider() == "google":
+        return True
+    if active_routing_provider() == "mapbox":
+        return MAPBOX_PROFILE == "mapbox/driving-traffic"
+    return False
 
 
 def google_waypoint(node: LocationPoint) -> dict:

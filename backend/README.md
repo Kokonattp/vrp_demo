@@ -33,6 +33,17 @@ GOOGLE_TRAFFIC_BUCKETS=08:00,09:00,10:00,13:00,15:00,17:00
 
 Google mode uses `Compute Route Matrix` for traffic-aware travel times in OR-Tools and `computeRoutes` for road-following map polylines. Fixed-time stops use the closest traffic bucket; flexible stops use the best available bucket and get a lower adjacency cost when they are near a fixed-time anchor.
 
+Mapbox mode can be enabled with:
+
+```bash
+ROUTING_PROVIDER=mapbox
+MAPBOX_ACCESS_TOKEN=your_mapbox_token
+MAPBOX_PROFILE=mapbox/driving-traffic
+MAPBOX_TRAFFIC_BUCKETS=08:00,09:00,10:00,13:00,15:00,17:00
+```
+
+Mapbox `driving-traffic` uses live/historic traffic where covered and supports up to 10 coordinates for Matrix API requests. Use `MAPBOX_PROFILE=mapbox/driving` for up to 25 coordinates without traffic-aware durations.
+
 ## Cost Model
 
 `POST /api/optimize` supports an optional `costModel` object for simulation:

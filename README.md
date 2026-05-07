@@ -94,6 +94,17 @@ $env:GOOGLE_TRAFFIC_BUCKETS="08:00,09:00,10:00,13:00,15:00,17:00"
 
 With Google routing enabled, the optimizer matrix uses traffic-aware travel duration, and map route lines use Google road polylines. Fixed-time stops use the traffic bucket closest to their time window; flexible stops can use the best bucket and are encouraged to cluster before/after nearby fixed-time anchors. If Google routing is unavailable, the backend falls back to OSRM when configured, then to a haversine travel-time simulation so the studio remains usable offline.
 
+Mapbox Directions/Matrix can also be used for traffic-aware routing:
+
+```bash
+$env:ROUTING_PROVIDER="mapbox"
+$env:MAPBOX_ACCESS_TOKEN="your_mapbox_token"
+$env:MAPBOX_PROFILE="mapbox/driving-traffic"
+$env:MAPBOX_TRAFFIC_BUCKETS="08:00,09:00,10:00,13:00,15:00,17:00"
+```
+
+With `mapbox/driving-traffic`, matrix requests are limited to 10 coordinates by Mapbox. For larger demo sets without traffic, use `MAPBOX_PROFILE=mapbox/driving`.
+
 ## Cost Model
 
 The optimize request accepts an editable test `costModel`. These values are assumptions for simulation, not accounting data:
