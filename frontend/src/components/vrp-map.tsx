@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Coordinate, LocationPoint, Order, RoutePlan } from "@/types/vrp";
 
 const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
-const routeLineColor = "#1B2E4B";
+const fallbackRouteLineColor = "#1B2E4B";
 const depotMarkerColor = "#1B2E4B";
 const storeMarkerColor = "#EF4444";
 
@@ -303,9 +303,9 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
             type: "line",
             source: sourceId,
             paint: {
-              "line-color": routeLineColor,
+              "line-color": route.color || fallbackRouteLineColor,
               "line-width": 8,
-              "line-opacity": 0.08,
+              "line-opacity": 0.14,
               "line-blur": 6
             },
             layout: {
@@ -318,7 +318,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
             type: "line",
             source: sourceId,
             paint: {
-              "line-color": routeLineColor,
+              "line-color": route.color || fallbackRouteLineColor,
               "line-width": 4,
               "line-opacity": 0.85
             },
