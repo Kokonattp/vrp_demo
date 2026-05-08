@@ -2,11 +2,9 @@
 
 import dynamic from "next/dynamic";
 import {
-  AlertTriangle,
   Boxes,
   Calculator,
   CircleHelp,
-  Clock3,
   Download,
   FileUp,
   Play,
@@ -19,8 +17,7 @@ import {
   Upload,
   X
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,7 +27,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import QRCode from "qrcode";
 import { buildDriverRoutePayload, encodeDriverPayload, minutesToClock, type DriverRoutePayload } from "@/lib/driver-payload";
-import { initialScenarioComparison, routeColors, sampleLocations, sampleOrders, sampleVehicles } from "@/lib/sample-data";
+import { routeColors, sampleLocations, sampleOrders, sampleVehicles } from "@/lib/sample-data";
 import type { ClusterTemplate, Coordinate, CostModel, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
 
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
@@ -631,14 +628,13 @@ export default function Home() {
   const [orders, setOrders] = useState<Order[]>(sampleOrders);
   const [costModel, setCostModel] = useState<CostModel>(defaultCostModel);
   const [result, setResult] = useState<ScenarioResult>(() => emptyScenarioResult("baseline"));
-  const [comparison, setComparison] = useState<ScenarioResult[]>(initialScenarioComparison);
   const [planningDate, setPlanningDate] = useState(() => todayDate());
   const csvTemplate = useMemo(() => buildBranchCsvTemplate(planningDate), [planningDate]);
   const [csvText, setCsvText] = useState("");
   const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<OptimizerState>("warming");
-  const [scenarioName, setScenarioName] = useState("morning-wave");
+  const [scenarioName] = useState("morning-wave");
   const [showGuide, setShowGuide] = useState(false);
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
   const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
@@ -649,32 +645,6 @@ export default function Home() {
   const dailyOrders = useMemo(
     () => orders.filter((order) => order.serviceDate === planningDate),
     [orders, planningDate]
-  );
-  const totalDemand = useMemo(
-    () =>
-      dailyOrders.reduce(
-        (sum, order) => ({
-          kg: sum.kg + order.weightKg,
-          cbm: sum.cbm + order.cbm
-        }),
-        { kg: 0, cbm: 0 }
-      ),
-    [dailyOrders]
-  );
-  const totalCapacity = useMemo(
-    () =>
-      vehicles.reduce(
-        (sum, vehicle) => ({
-          kg: sum.kg + vehicle.capacityKg,
-          cbm: sum.cbm + vehicle.capacityCbm
-        }),
-        { kg: 0, cbm: 0 }
-      ),
-    [vehicles]
-  );
-  const allWarnings = useMemo(
-    () => [...result.warnings, ...result.routes.flatMap((route) => route.warnings), ...result.unassignedOrders.map((id) => `${id} ยังไม่ถูกจัดส่ง`)],
-    [result]
   );
   const selectedLocation = useMemo(
     () => locations.find((location) => location.id === selectedLocationId) ?? locations[0],
@@ -822,7 +792,6 @@ export default function Home() {
       const optimized = await optimizePayload(payload);
       setResult(optimized);
       setHasCalculatedRoute(true);
-      setComparison((current) => [optimized, ...current.filter((item) => item.scenarioId !== optimized.scenarioId)].slice(0, 4));
     } finally {
       setIsRunning(false);
       if (!options?.keepPanel) {
@@ -856,7 +825,6 @@ export default function Home() {
       const merged = mergeScenarioResults(`${scenarioName || "scenario"}-clusters`, results);
       setResult(merged);
       setHasCalculatedRoute(true);
-      setComparison((current) => [merged, ...current.filter((item) => item.scenarioId !== merged.scenarioId)].slice(0, 4));
       setActivePanel("run");
     } finally {
       setIsRunning(false);
@@ -1009,94 +977,6 @@ export default function Home() {
     setHasCalculatedRoute(false);
   };
 
-  const moveStopToRoute = (event: DragEvent<HTMLDivElement>, toVehicleId: string) => {
-    const orderId = event.dataTransfer.getData("text/order-id");
-    if (!orderId || !depot) return;
-    const order = orders.find((candidate) => candidate.id === orderId);
-    if (!order) return;
-    const nextRoutes = result.routes.map((route) => {
-      const orderStops = route.stops.filter((stop) => stop.orderId && stop.orderId !== orderId);
-      if (route.vehicleId === toVehicleId) {
-        const location = locations.find((candidate) => candidate.id === order.locationId);
-        if (location) {
-          orderStops.push({
-            locationId: location.id,
-            orderId: order.id,
-            name: location.name,
-            lat: location.lat,
-            lng: location.lng,
-            arrivalMinutes: 9 * 60 + orderStops.length * 35,
-            loadKg: order.weightKg,
-            loadCbm: order.cbm,
-            serviceMinutes: order.serviceMinutes,
-            warnings: []
-          });
-        }
-      }
-
-      const vehicle = vehicles.find((candidate) => candidate.id === route.vehicleId);
-      const depotStop = {
-        locationId: depot.id,
-        name: depot.name,
-        lat: depot.lat,
-        lng: depot.lng,
-        arrivalMinutes: 8 * 60,
-        loadKg: 0,
-        loadCbm: 0,
-        serviceMinutes: 0,
-        warnings: []
-      };
-      const stops: RouteStop[] = [depotStop, ...orderStops, { ...depotStop, arrivalMinutes: 18 * 60 }];
-      const loadKg = orderStops.reduce((sum, stop) => sum + stop.loadKg, 0);
-      const loadCbm = orderStops.reduce((sum, stop) => sum + stop.loadCbm, 0);
-      const warnings = [
-        ...(vehicle && loadKg > vehicle.capacityKg ? [`${vehicle.name} น้ำหนักเกินความจุ`] : []),
-        ...(vehicle && loadCbm > vehicle.capacityCbm ? [`${vehicle.name} ปริมาตรเกินความจุ`] : []),
-        ...(vehicle && orderStops.length > vehicle.maxStops ? [`${vehicle.name} จำนวนจุดส่งเกินกำหนด`] : [])
-      ];
-      const routeDistance = stops.slice(1).reduce((sum, stop, index) => sum + distanceKm(stops[index], stop), 0);
-      const durationMinutes = Math.round((routeDistance / 28) * 60 + orderStops.reduce((sum, stop) => sum + stop.serviceMinutes, 0));
-      const routeCost = calculateRouteCost(
-        routeDistance,
-        durationMinutes,
-        stops.reduce((sum, stop) => sum + stop.warnings.filter((warning) => warning.includes("เวลา") || warning.includes("Time window")).length, 0),
-        costModel
-      );
-      return {
-        ...route,
-        stops,
-        geometry: stops.map((stop) => ({ lat: stop.lat, lng: stop.lng })),
-        loadKg,
-        loadCbm,
-        distanceKm: Number(routeDistance.toFixed(1)),
-        durationMinutes,
-        warnings,
-        routeNotes: route.routeNotes ?? [],
-        fixedCost: routeCost.fixedCost,
-        distanceCost: routeCost.distanceCost,
-        timeCost: routeCost.timeCost,
-        overtimeCost: routeCost.overtimeCost,
-        latePenalty: routeCost.latePenalty,
-        totalCost: routeCost.totalCost
-      };
-    });
-    const manualWarnings = ["มีการปรับเส้นทางด้วยมือ ควรคำนวณ VRP ใหม่เพื่อจัดลำดับจุดส่งอีกครั้ง"];
-    setResult((current) => {
-      const costBreakdown = buildCostBreakdown(nextRoutes, current.unassignedOrders, costModel);
-      return {
-        ...current,
-        status: "fallback",
-        routes: nextRoutes,
-        totalDistanceKm: Number(nextRoutes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
-        totalDurationMinutes: nextRoutes.reduce((sum, route) => sum + route.durationMinutes, 0),
-        totalCost: costBreakdown.totalCost,
-        costBreakdown,
-        summary: buildScenarioSummary("fallback", nextRoutes, current.unassignedOrders, manualWarnings, costBreakdown),
-        warnings: manualWarnings
-      };
-    });
-  };
-
   return (
     <>
     <main className="app-shell h-screen overflow-hidden bg-[#F8FAFC]">
@@ -1117,9 +997,10 @@ export default function Home() {
             </div>
             <div className="space-y-3 p-5">
               {[
-                ["1", "ใส่พิกัดจริง", "นำเข้า CSV หรือกรอกพิกัดสาขา/คลังด้วย lat, lng จริง"],
-                ["2", "สร้างข้อมูลจำลอง", "กำหนดรถ ความจุ ออเดอร์ น้ำหนัก CBM เวลาเข้ารับ/ส่ง และ service time"],
-                ["3", "กดคำนวณ VRP", "ระบบส่งข้อมูลไป backend OR-Tools เพื่อแบ่งงานให้รถและจัดลำดับจุดส่ง"]
+                ["1", "เตรียม Branch data", "นำเข้า CSV หรือแก้ข้อมูลสาขา/คลัง พิกัด ที่อยู่ demand และ service time"],
+                ["2", "จัด Cluster", "Generate cluster เป็น route template แล้ว lock หรือย้าย branch ได้ตามรอบส่ง"],
+                ["3", "ตั้ง Vehicle / Order", "กำหนดรถ ความจุ max stops และออเดอร์ของวันที่วางแผน"],
+                ["4", "Optimize", "คำนวณเฉพาะ cluster หรือ optimize all clusters เพื่อออกใบงานและ QR คนรถ"]
               ].map(([number, title, detail]) => (
                 <div key={number} className="flex gap-3 rounded-[14px] border border-border bg-[#F8FAFC] p-3">
                   <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-sm font-semibold text-primary-foreground">
@@ -1170,8 +1051,8 @@ export default function Home() {
             <div className="mb-4 rounded-[14px] border border-border bg-white p-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">ทำงาน 3 ขั้นตอน</p>
-                  <p className="text-xs leading-relaxed text-muted-foreground">ใส่พิกัดจริง สร้างรถ/ออเดอร์จำลอง แล้วกดคำนวณ ผลลัพธ์อยู่ด้านขวาเสมอ</p>
+                  <p className="text-sm font-semibold">Workflow 4 ขั้นตอน</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">เตรียม Branch, จัด Cluster, ตั้ง Vehicle แล้ว Optimize ตามรอบส่ง</p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => setShowGuide(true)}>
                   วิธีใช้
@@ -1194,58 +1075,6 @@ export default function Home() {
                 );
               })}
             </TabsList>
-
-            <TabsContent value="planning" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <CardTitle>พื้นที่วางแผน</CardTitle>
-                  <CardDescription>{scenarioName}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <Field label="วันที่วางแผน">
-                    <Input
-                      type="date"
-                      value={planningDate}
-                      onChange={(event) => {
-                        setPlanningDate(event.target.value);
-                        setResult(emptyScenarioResult(scenarioName || "draft"));
-                        setHasCalculatedRoute(false);
-                      }}
-                    />
-                  </Field>
-                  <Field label="ชื่อสถานการณ์">
-                    <Input value={scenarioName} onChange={(event) => setScenarioName(event.target.value)} />
-                  </Field>
-                  <div className="grid grid-cols-2 gap-2">
-                    <ScenarioStat icon={Boxes} label="CBM" value={`${totalDemand.cbm.toFixed(1)} / ${totalCapacity.cbm.toFixed(1)}`} />
-                    <ScenarioStat icon={Clock3} label="เวลาบริการ" value={`${dailyOrders.reduce((sum, order) => sum + order.serviceMinutes, 0)} นาที`} />
-                  </div>
-                  <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
-                    {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
-                    {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังคำนวณ") : "คำนวณเส้นทาง"}
-                  </Button>
-                </CardContent>
-              </Card>
-
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <CardTitle>Branch / Depot</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {locations.map((location) => (
-                    <button
-                      key={location.id}
-                      type="button"
-                      onClick={() => setSelectedLocationId(location.id)}
-                      className="flex w-full items-center justify-between rounded-md border bg-white px-3 py-2 text-left text-sm transition-colors hover:bg-secondary"
-                    >
-                      <span className="truncate">{location.name}</span>
-                      <Badge variant={location.type === "depot" ? "default" : "muted"}>{locationTypeLabel(location.type)}</Badge>
-                    </button>
-                  ))}
-                </CardContent>
-              </Card>
-            </TabsContent>
 
             <TabsContent value="upload" className="mt-4 space-y-4">
               <Card className="border-slate-200">
@@ -1490,63 +1319,6 @@ export default function Home() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="adjust" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <CardTitle>ปรับเส้นทางด้วยการลาก</CardTitle>
-                  <CardDescription>{result.routes.length} เส้นทางที่ใช้งานอยู่</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {result.routes.map((route) => (
-                    <RouteDropZone key={route.vehicleId} route={route} onDropStop={moveStopToRoute} />
-                  ))}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="warnings" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <CardTitle>แจ้งเตือนข้อจำกัด</CardTitle>
-                  <CardDescription>{allWarnings.length ? `${allWarnings.length} รายการ` : "ไม่มีข้อจำกัดที่ผิดเงื่อนไข"}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {allWarnings.length ? (
-                    allWarnings.map((warning) => (
-                      <div key={warning} className="flex items-start gap-2 rounded-md border border-accent/50 bg-accent/10 p-3 text-sm">
-                        <AlertTriangle className="mt-0.5 h-4 w-4 text-accent" />
-                        <span>{warning}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="rounded-md border bg-secondary p-3 text-sm text-muted-foreground">สถานการณ์นี้ผ่านเงื่อนไขทั้งหมด</div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="compare" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <CardTitle>เปรียบเทียบสถานการณ์</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {comparison.map((scenario) => (
-                    <div key={scenario.scenarioId} className="rounded-md border p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="font-medium">{scenario.scenarioId}</span>
-                        <Badge variant={scenario.unassignedOrders.length ? "warning" : "success"}>{statusLabel(scenario.status)}</Badge>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-                        <span>{scenario.totalDistanceKm.toFixed(1)} กม.</span>
-                        <span>{scenario.totalDurationMinutes} นาที</span>
-                        <span>{scenario.unassignedOrders.length} ค้าง</span>
-                      </div>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            </TabsContent>
           </Tabs>
         </aside>
 
@@ -1947,16 +1719,6 @@ function LoadingSpinner() {
   return <span className="vrp-spinner" aria-hidden="true" />;
 }
 
-function ScenarioStat({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
-  return (
-    <div className="rounded-xl bg-[#F8FAFC] p-3">
-      <Icon className="mb-2 h-4 w-4 text-primary" />
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-sm font-bold text-primary">{value}</div>
-    </div>
-  );
-}
-
 function RouteMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl bg-[#F8FAFC] px-3 py-2">
@@ -2220,44 +1982,6 @@ function OrderRow({
             onChange={(event) => onChange({ ...order, serviceMinutes: Number(event.target.value) })}
           />
         </Field>
-      </div>
-    </div>
-  );
-}
-
-function RouteDropZone({
-  route,
-  onDropStop
-}: {
-  route: RoutePlan;
-  onDropStop: (event: DragEvent<HTMLDivElement>, toVehicleId: string) => void;
-}) {
-  return (
-    <div
-      className="rounded-md border p-3"
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => onDropStop(event, route.vehicleId)}
-    >
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-medium">{route.vehicleName}</span>
-        <span className="text-xs text-muted-foreground">{route.loadKg} กก.</span>
-      </div>
-      <div className="space-y-1">
-        {route.stops
-          .filter((stop) => stop.orderId)
-          .map((stop) => (
-            <div
-              key={stop.orderId}
-              draggable
-              onDragStart={(event) => event.dataTransfer.setData("text/order-id", stop.orderId ?? "")}
-              className="cursor-grab rounded-md bg-secondary px-3 py-2 text-sm active:cursor-grabbing"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate">{stop.name}</span>
-                <span className="text-xs text-muted-foreground">{stop.orderId}</span>
-              </div>
-            </div>
-          ))}
       </div>
     </div>
   );
