@@ -77,6 +77,7 @@ const panels = [
 const clusterColors = ["#0F766E", "#D97706", "#2563EB", "#7C3AED", "#E11D48", "#475569"];
 
 type OptimizerState = "warming" | "ready" | "traffic" | "offline";
+type OptimizeMode = "cluster-support" | "strict-cluster" | "global";
 type EditorModalState =
   | { type: "branch" }
   | { type: "vehicle"; vehicleId: string }
@@ -126,6 +127,19 @@ function formatCurrency(value: number | undefined) {
 type DisplayRouteStop = RouteStop & {
   deliveryCount: number;
   orderIds: string[];
+};
+
+type ClusterCapacityPlan = {
+  cluster: ClusterTemplate;
+  orders: Order[];
+  primaryVehicle?: Vehicle;
+  supportVehicles: Vehicle[];
+  selectedVehicles: Vehicle[];
+  totalWeight: number;
+  totalCbm: number;
+  requiredStops: number;
+  status: "fit" | "support" | "over";
+  reasons: string[];
 };
 
 function compactRouteStops(stops: RouteStop[]): DisplayRouteStop[] {
@@ -520,6 +534,117 @@ function mergeScenarioResults(scenarioId: string, results: ScenarioResult[]): Sc
   };
 }
 
+function buildClusterCapacityPlan(
+  cluster: ClusterTemplate,
+  orders: Order[],
+  vehicles: Vehicle[],
+  mode: OptimizeMode
+): ClusterCapacityPlan {
+  const clusterOrders = orders.filter((order) => cluster.branchIds.includes(order.locationId));
+  const totalWeight = clusterOrders.reduce((sum, order) => sum + order.weightKg, 0);
+  const totalCbm = clusterOrders.reduce((sum, order) => sum + order.cbm, 0);
+  const requiredStops = new Set(clusterOrders.map((order) => order.locationId)).size;
+  const sortedVehicles = [...vehicles].sort(
+    (a, b) => b.capacityKg + b.capacityCbm * 120 + b.maxStops * 80 - (a.capacityKg + a.capacityCbm * 120 + a.maxStops * 80)
+  );
+  const primaryVehicle = sortedVehicles[0];
+  const reasons: string[] = [];
+  const primaryFits =
+    Boolean(primaryVehicle) &&
+    totalWeight <= (primaryVehicle?.capacityKg ?? 0) &&
+    totalCbm <= (primaryVehicle?.capacityCbm ?? 0) &&
+    requiredStops <= (primaryVehicle?.maxStops ?? 0);
+
+  if (!primaryVehicle) {
+    return {
+      cluster,
+      orders: clusterOrders,
+      primaryVehicle,
+      supportVehicles: [],
+      selectedVehicles: [],
+      totalWeight,
+      totalCbm,
+      requiredStops,
+      status: "over",
+      reasons: ["ยังไม่มี Vehicle"]
+    };
+  }
+
+  if (totalWeight > primaryVehicle.capacityKg) reasons.push(`น้ำหนักเกิน ${Math.round(totalWeight - primaryVehicle.capacityKg)} กก.`);
+  if (totalCbm > primaryVehicle.capacityCbm) reasons.push(`CBM เกิน ${(totalCbm - primaryVehicle.capacityCbm).toFixed(1)}`);
+  if (requiredStops > primaryVehicle.maxStops) reasons.push(`จำนวนจุดเกิน ${requiredStops - primaryVehicle.maxStops} จุด`);
+
+  if (mode === "global") {
+    return {
+      cluster,
+      orders: clusterOrders,
+      primaryVehicle,
+      supportVehicles: sortedVehicles.slice(1),
+      selectedVehicles: sortedVehicles,
+      totalWeight,
+      totalCbm,
+      requiredStops,
+      status: primaryFits ? "fit" : "support",
+      reasons: primaryFits ? ["Global optimize พร้อมใช้รถทั้งหมด"] : ["Global optimize อนุญาตให้กระจายงานข้ามรถ"]
+    };
+  }
+
+  if (primaryFits || mode === "strict-cluster") {
+    return {
+      cluster,
+      orders: clusterOrders,
+      primaryVehicle,
+      supportVehicles: [],
+      selectedVehicles: [primaryVehicle],
+      totalWeight,
+      totalCbm,
+      requiredStops,
+      status: primaryFits ? "fit" : "over",
+      reasons: primaryFits ? ["รถหลักรองรับ cluster นี้ได้"] : reasons
+    };
+  }
+
+  let cumulativeWeight = primaryVehicle.capacityKg;
+  let cumulativeCbm = primaryVehicle.capacityCbm;
+  let cumulativeStops = primaryVehicle.maxStops;
+  const supportVehicles: Vehicle[] = [];
+  for (const vehicle of sortedVehicles.slice(1)) {
+    if (cumulativeWeight >= totalWeight && cumulativeCbm >= totalCbm && cumulativeStops >= requiredStops) break;
+    supportVehicles.push(vehicle);
+    cumulativeWeight += vehicle.capacityKg;
+    cumulativeCbm += vehicle.capacityCbm;
+    cumulativeStops += vehicle.maxStops;
+  }
+  const supportFits = cumulativeWeight >= totalWeight && cumulativeCbm >= totalCbm && cumulativeStops >= requiredStops;
+  return {
+    cluster,
+    orders: clusterOrders,
+    primaryVehicle,
+    supportVehicles,
+    selectedVehicles: [primaryVehicle, ...supportVehicles],
+    totalWeight,
+    totalCbm,
+    requiredStops,
+    status: supportFits ? "support" : "over",
+    reasons: supportFits ? [...reasons, `เพิ่ม support vehicle ${supportVehicles.length} คัน`] : [...reasons, "รถทั้งหมดที่มียังไม่พอ"]
+  };
+}
+
+function clusterRunSummary(plan: ClusterCapacityPlan, result: ScenarioResult, mode: OptimizeMode) {
+  const modeLabel =
+    mode === "cluster-support" ? "Cluster + support vehicle" : mode === "strict-cluster" ? "Strict 1 vehicle / cluster" : "Global optimize";
+  return [
+    `${plan.cluster.name}: ${modeLabel}`,
+    plan.status === "fit"
+      ? `ใช้รถหลัก ${plan.primaryVehicle?.name ?? "-"} คันเดียว เพราะ demand อยู่ใน capacity`
+      : plan.status === "support"
+        ? `ใช้รถหลัก ${plan.primaryVehicle?.name ?? "-"} + support ${plan.supportVehicles.length} คัน เพราะ ${plan.reasons.join(", ")}`
+        : `ยังมีข้อจำกัด: ${plan.reasons.join(", ")}`,
+    `Demand ${Math.round(plan.totalWeight)} กก. · ${plan.totalCbm.toFixed(1)} CBM · ${plan.requiredStops} stops`,
+    ...result.summary
+  ];
+}
+
 function buildLocalRouteNotes(orders: Order[], locations: LocationPoint[]) {
   const locationById = new Map(locations.map((location) => [location.id, location]));
   const notes: string[] = [];
@@ -640,6 +765,7 @@ export default function Home() {
   const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
   const [editorModal, setEditorModal] = useState<EditorModalState>(null);
   const [selectedClusterId, setSelectedClusterId] = useState("cluster-1");
+  const [optimizeMode, setOptimizeMode] = useState<OptimizeMode>("cluster-support");
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -667,6 +793,10 @@ export default function Home() {
         .map((location) => [location.id, colorByCluster.get(location.clusterId || "unassigned") ?? clusterColors[0]])
     );
   }, [clusters, locations]);
+  const selectedClusterPlan = useMemo(
+    () => (selectedCluster ? buildClusterCapacityPlan(selectedCluster, dailyOrders, vehicles, optimizeMode) : undefined),
+    [dailyOrders, optimizeMode, selectedCluster, vehicles]
+  );
   const editingVehicle = useMemo(
     () => (editorModal?.type === "vehicle" ? vehicles.find((vehicle) => vehicle.id === editorModal.vehicleId) : undefined),
     [editorModal, vehicles]
@@ -775,6 +905,7 @@ export default function Home() {
     setIsRunning(true);
     setOptimizerState((current) => (current === "ready" ? current : "warming"));
     const cluster = options?.clusterId ? clusters.find((item) => item.id === options.clusterId) : undefined;
+    const plan = cluster ? buildClusterCapacityPlan(cluster, dailyOrders, vehicles, optimizeMode) : undefined;
     const optimizedOrders = cluster ? dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId)) : dailyOrders;
     const optimizedLocations = cluster
       ? [depot, ...locations.filter((location) => location.type === "store" && cluster.branchIds.includes(location.id))]
@@ -783,13 +914,20 @@ export default function Home() {
       scenarioId: cluster ? cluster.name : scenarioName || `scenario-${Date.now()}`,
       depotId: depot.id,
       locations: optimizedLocations,
-      vehicles,
+      vehicles: plan?.selectedVehicles.length ? plan.selectedVehicles : vehicles,
       orders: optimizedOrders,
       costModel
     };
 
     try {
-      const optimized = await optimizePayload(payload);
+      const optimizedRaw = await optimizePayload(payload);
+      const optimized = plan
+        ? {
+            ...optimizedRaw,
+            summary: clusterRunSummary(plan, optimizedRaw, optimizeMode),
+            warnings: plan.status === "over" ? [...optimizedRaw.warnings, ...plan.reasons] : optimizedRaw.warnings
+          }
+        : optimizedRaw;
       setResult(optimized);
       setHasCalculatedRoute(true);
     } finally {
@@ -798,7 +936,7 @@ export default function Home() {
         setActivePanel("run");
       }
     }
-  }, [clusters, costModel, dailyOrders, depot, locations, optimizePayload, scenarioName, vehicles]);
+  }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, scenarioName, vehicles]);
 
   const runAllClusters = useCallback(async () => {
     if (!depot) return;
@@ -809,18 +947,22 @@ export default function Home() {
     try {
       const results: ScenarioResult[] = [];
       for (const cluster of activeClusters) {
+        const plan = buildClusterCapacityPlan(cluster, dailyOrders, vehicles, optimizeMode);
         const clusterLocations = [depot, ...locations.filter((location) => location.type === "store" && cluster.branchIds.includes(location.id))];
         const clusterOrders = dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId));
-        results.push(
-          await optimizePayload({
+        const optimizedRaw = await optimizePayload({
             scenarioId: cluster.name,
             depotId: depot.id,
             locations: clusterLocations,
-            vehicles,
+            vehicles: plan.selectedVehicles.length ? plan.selectedVehicles : vehicles,
             orders: clusterOrders,
             costModel
-          })
-        );
+          });
+        results.push({
+          ...optimizedRaw,
+          summary: clusterRunSummary(plan, optimizedRaw, optimizeMode),
+          warnings: plan.status === "over" ? [...optimizedRaw.warnings, ...plan.reasons] : optimizedRaw.warnings
+        });
       }
       const merged = mergeScenarioResults(`${scenarioName || "scenario"}-clusters`, results);
       setResult(merged);
@@ -829,7 +971,7 @@ export default function Home() {
     } finally {
       setIsRunning(false);
     }
-  }, [clusters, costModel, dailyOrders, depot, locations, optimizePayload, scenarioName, vehicles]);
+  }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, scenarioName, vehicles]);
 
   const addVehicle = () => {
     if (!depot) return;
@@ -1193,6 +1335,38 @@ export default function Home() {
                       ))}
                     </select>
                   </Field>
+                  <Field label="Optimize mode">
+                    <select
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-semibold text-foreground"
+                      value={optimizeMode}
+                      onChange={(event) => setOptimizeMode(event.target.value as OptimizeMode)}
+                    >
+                      <option value="cluster-support">Cluster + support vehicle</option>
+                      <option value="strict-cluster">Strict 1 vehicle / cluster</option>
+                      <option value="global">Global optimize</option>
+                    </select>
+                  </Field>
+                  {selectedClusterPlan && (
+                    <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="font-semibold">Capacity check</p>
+                        <Badge variant={selectedClusterPlan.status === "over" ? "warning" : "success"}>
+                          {selectedClusterPlan.status === "fit" ? "รถหลักพอ" : selectedClusterPlan.status === "support" ? "ต้องมีรถเสริม" : "ยังเกิน"}
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <RouteMetric label="Primary" value={selectedClusterPlan.primaryVehicle?.name ?? "-"} />
+                        <RouteMetric label="Support" value={`${selectedClusterPlan.supportVehicles.length} คัน`} />
+                        <RouteMetric label="Demand" value={`${Math.round(selectedClusterPlan.totalWeight)} กก.`} />
+                        <RouteMetric label="CBM / Stops" value={`${selectedClusterPlan.totalCbm.toFixed(1)} / ${selectedClusterPlan.requiredStops}`} />
+                      </div>
+                      <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
+                        {selectedClusterPlan.reasons.map((reason) => (
+                          <p key={reason}>{reason}</p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <Button onClick={() => selectedCluster && runOptimization({ clusterId: selectedCluster.id })} disabled={isRunning || !selectedCluster}>
                       <Play className="h-4 w-4" />
