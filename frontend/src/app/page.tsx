@@ -68,7 +68,7 @@ function buildBranchCsvTemplate(baseDate: string) {
 }
 
 const panels = [
-  { id: "upload", label: "Branch data", icon: FileUp },
+  { id: "upload", label: "ข้อมูลสาขา", icon: FileUp },
   { id: "clusters", label: "Cluster", icon: Boxes },
   { id: "vehicles", label: "Vehicle", icon: Truck },
   { id: "run", label: "Order / Optimize", icon: Play }
@@ -435,7 +435,7 @@ function buildClusterTemplates(
     const totalWeight = clusterOrders.reduce((sum, order) => sum + order.weightKg, 0);
     const totalCbm = clusterOrders.reduce((sum, order) => sum + order.cbm, 0);
     const notes = [
-      `${branchIds.length} branches · ${clusterOrders.length} orders`,
+      `${branchIds.length} สาขา · ${clusterOrders.length} orders`,
       fixedOrder ? `Anchor time ${fixedOrder.timeWindowStart}-${fixedOrder.timeWindowEnd}` : "Flexible cluster",
       `Load ${Math.round(totalWeight)} kg · ${totalCbm.toFixed(1)} CBM`
     ];
@@ -1135,7 +1135,7 @@ export default function Home() {
     <main className="app-shell h-screen overflow-hidden bg-[#F8FAFC]">
       {showGuide && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/30 p-4">
-          <div className="w-full max-w-xl rounded-[14px] border border-border bg-white shadow-[0_16px_36px_rgba(15,23,42,0.08)]">
+          <div className="w-full max-w-xl rounded-[14px] border border-slate-300 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.16)]">
             <div className="flex items-start justify-between gap-4 border-b p-5">
               <div>
                 <Badge variant="success">คู่มือเร็ว</Badge>
@@ -1150,7 +1150,7 @@ export default function Home() {
             </div>
             <div className="space-y-3 p-5">
               {[
-                ["1", "เตรียม Branch data", "นำเข้า CSV หรือแก้ข้อมูลสาขา/คลัง พิกัด ที่อยู่ demand และ service time"],
+                ["1", "เตรียมข้อมูลสาขา", "นำเข้า CSV หรือแก้ข้อมูลสาขา/คลัง พิกัด ที่อยู่ demand และ service time"],
                 ["2", "จัด Cluster", "Generate cluster เป็น route template แล้ว lock หรือย้าย branch ได้ตามรอบส่ง"],
                 ["3", "ตั้ง Vehicle / Order", "กำหนดรถ ความจุ max stops และออเดอร์ของวันที่วางแผน"],
                 ["4", "Optimize", "คำนวณเฉพาะ cluster หรือ optimize all clusters เพื่อออกใบงานและ QR คนรถ"]
@@ -1201,11 +1201,11 @@ export default function Home() {
       <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_396px]">
         <aside className="overflow-y-auto border-b border-border bg-[#F8FAFC] p-4 lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
-            <div className="mb-4 rounded-[14px] border border-border bg-white p-3">
+            <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_14px_34px_rgba(15,23,42,0.14)]">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold">Workflow 4 ขั้นตอน</p>
-                  <p className="text-xs leading-relaxed text-muted-foreground">เตรียม Branch, จัด Cluster, ตั้ง Vehicle แล้ว Optimize ตามรอบส่ง</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">เตรียมข้อมูลสาขา, จัด Cluster, ตั้ง Vehicle แล้ว Optimize ตามรอบส่ง</p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => setShowGuide(true)}>
                   วิธีใช้
@@ -1230,9 +1230,18 @@ export default function Home() {
             </TabsList>
 
             <TabsContent value="upload" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
+              <Card className="border-slate-300">
                 <CardHeader>
-                  <CardTitle>นำเข้า Branch data</CardTitle>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>ข้อมูลสาขา</CardTitle>
+                      <CardDescription>นำเข้า CSV และแก้ข้อมูลสาขาในส่วนเดียวกัน</CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={addBranch}>
+                      <Plus className="h-4 w-4" />
+                      เพิ่มสาขา
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Field label="วันที่วางแผน">
@@ -1254,32 +1263,15 @@ export default function Home() {
                   <Textarea
                     value={csvText}
                     onChange={(event) => setCsvText(event.target.value)}
-                    placeholder="วางข้อมูล CSV ที่ต้องการนำเข้า หรือกดใช้ template ของวันที่เลือก"
+                    placeholder="วางข้อมูล CSV ที่ต้องการนำเข้า หรือเลือกไฟล์ CSV จากเครื่อง"
+                    className="min-h-20"
                   />
-                  <Button variant="outline" className="w-full" onClick={() => setCsvText(csvTemplate)}>
-                    ใช้ template ของวันที่เลือก
-                  </Button>
                   <Button className="w-full" onClick={importCsv}>
                     <Upload className="h-4 w-4" />
-                    นำเข้า Branch
+                    นำเข้าสาขา
                   </Button>
-                </CardContent>
-              </Card>
 
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <CardTitle>ข้อมูล Branch</CardTitle>
-                      <CardDescription>ข้อมูลด้านล่างเป็นค่าของวันที่ {planningDate}</CardDescription>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={addBranch}>
-                      <Plus className="h-4 w-4" />
-                      เพิ่มสาขา
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
+                  <div className="border-t border-slate-300 pt-3" />
                   {selectedLocation && (
                     <>
                       <Field label="เลือกสาขาที่ต้องการแก้ไข">
@@ -1298,7 +1290,7 @@ export default function Home() {
                       <p className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
                         คลิก marker บนแผนที่เพื่อเปิด popup และเลือกแก้ไขสาขานั้นได้เช่นกัน
                       </p>
-                      <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
+                      <div className="rounded-xl border border-slate-300 bg-white p-3 text-sm shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
                         <div className="mb-2 flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="truncate font-semibold">{selectedLocation.name}</p>
@@ -1323,7 +1315,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="clusters" className="mt-4 space-y-4">
-              <Card className="overflow-hidden border-slate-200 shadow-[0_14px_34px_rgba(15,23,42,0.08)]">
+              <Card className="overflow-hidden border-slate-300 shadow-[0_18px_44px_rgba(15,23,42,0.14)]">
                 <CardHeader className="border-b border-slate-100 bg-white">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -1336,7 +1328,7 @@ export default function Home() {
                 <CardContent className="space-y-4 pt-4">
                   <div className="grid grid-cols-3 gap-2">
                     <RouteMetric label="Clusters" value={String(clusters.length)} />
-                    <RouteMetric label="Branches" value={String(locations.filter((location) => location.type === "store").length)} />
+                    <RouteMetric label="สาขา" value={String(locations.filter((location) => location.type === "store").length)} />
                     <RouteMetric label="Orders" value={String(dailyOrders.length)} />
                   </div>
                   <Field label="เลือก Cluster">
@@ -1347,7 +1339,7 @@ export default function Home() {
                     >
                       {clusters.map((cluster) => (
                         <option key={cluster.id} value={cluster.id}>
-                          {cluster.name} · {cluster.branchIds.length} branches
+                          {cluster.name} · {cluster.branchIds.length} สาขา
                         </option>
                       ))}
                     </select>
@@ -1364,7 +1356,7 @@ export default function Home() {
                     </select>
                   </Field>
                   {selectedClusterPlan && (
-                    <div className="rounded-xl border border-slate-200 bg-[#F8FAFC] p-3 text-sm">
+                    <div className="rounded-xl border border-slate-300 bg-[#F8FAFC] p-3 text-sm shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <p className="font-semibold">Capacity check</p>
                         <Badge variant={selectedClusterPlan.status === "over" ? "warning" : "success"}>
@@ -1431,7 +1423,7 @@ export default function Home() {
                       type="button"
                       onClick={() => setSelectedClusterId(cluster.id)}
                       className={`w-full rounded-xl border bg-white p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-[0_12px_24px_rgba(15,23,42,0.1)] ${
-                        selectedCluster?.id === cluster.id ? "border-primary shadow-[0_12px_28px_rgba(15,23,42,0.14)]" : "border-slate-200"
+                        selectedCluster?.id === cluster.id ? "border-primary shadow-[0_16px_36px_rgba(15,23,42,0.18)]" : "border-slate-300 shadow-[0_10px_24px_rgba(15,23,42,0.10)]"
                       }`}
                     >
                       <div className="mb-2 flex items-center justify-between gap-3">
@@ -1442,7 +1434,7 @@ export default function Home() {
                         <Badge variant={plan.status === "over" ? "warning" : "muted"}>{clusterOrders.length} orders</Badge>
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-xs">
-                        <RouteMetric label="Branches" value={String(cluster.branchIds.length)} />
+                        <RouteMetric label="สาขา" value={String(cluster.branchIds.length)} />
                         <RouteMetric label="Vehicle" value={plan.primaryVehicle?.name.replace("รถ", "") ?? "-"} />
                         <RouteMetric label="Status" value={plan.status === "fit" ? "Fit" : plan.status === "support" ? "Support" : "Over"} />
                       </div>
@@ -1463,7 +1455,7 @@ export default function Home() {
                 เพิ่ม Vehicle
               </Button>
               {vehicles.map((vehicle, index) => (
-                <Card key={vehicle.id} className="border-slate-200">
+                <Card key={vehicle.id} className="border-slate-300">
                   <CardContent className="space-y-3 pt-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
@@ -1485,7 +1477,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="run" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
+              <Card className="border-slate-300">
                 <CardHeader>
                   <CardTitle>Optimize route</CardTitle>
                   <CardDescription>{dailyOrders.length} ออเดอร์ของวันที่ {planningDate}</CardDescription>
@@ -1516,7 +1508,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => setEditorModal({ type: "cost" })}
-                    className="w-full rounded-[14px] border border-slate-200 bg-white p-3 text-left transition-colors hover:bg-secondary"
+                    className="w-full rounded-[14px] border border-slate-300 bg-white p-3 text-left shadow-[0_10px_24px_rgba(15,23,42,0.10)] transition-colors hover:bg-secondary"
                   >
                     <div className="flex items-center gap-2">
                       <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
@@ -1540,12 +1532,12 @@ export default function Home() {
         </aside>
 
         <section className="relative min-h-0 overflow-hidden">
-          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-xl border border-border bg-white/95 px-3 py-2 shadow-[0_8px_20px_rgba(15,23,42,0.08)]">
+          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-xl border border-slate-300 bg-white/95 px-3 py-2 shadow-[0_14px_32px_rgba(15,23,42,0.16)]">
             <p className="text-xs font-medium">
               แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
             </p>
           </div>
-          <div className="pointer-events-none absolute left-4 top-16 z-10 max-w-[260px] rounded-xl border border-border bg-white/95 p-3 shadow-[0_12px_28px_rgba(15,23,42,0.1)]">
+          <div className="pointer-events-none absolute left-4 top-16 z-10 max-w-[260px] rounded-xl border border-slate-300 bg-white/95 p-3 shadow-[0_16px_38px_rgba(15,23,42,0.16)]">
             <div className="mb-2 flex items-center justify-between gap-3">
               <p className="text-xs font-semibold">Cluster legend</p>
               <span className="text-[10px] text-muted-foreground">{optimizeModeLabel(optimizeMode)}</span>
@@ -1572,7 +1564,7 @@ export default function Home() {
         </section>
 
         <aside className="overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:border-l lg:border-t-0">
-          <div className="mb-4 rounded-[14px] border border-border bg-white p-3 shadow-[0_12px_28px_rgba(15,23,42,0.08)]">
+          <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_16px_40px_rgba(15,23,42,0.14)]">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="text-base font-semibold">Route plan</h2>
@@ -1593,7 +1585,7 @@ export default function Home() {
             </div>
           </div>
           {selectedClusterPlan && (
-            <Card className="mb-4 border-slate-200">
+            <Card className="mb-4 border-slate-300">
               <CardHeader>
                 <CardTitle>Cluster readiness</CardTitle>
                 <CardDescription>
@@ -1620,7 +1612,7 @@ export default function Home() {
             </div>
           )}
           {hasCalculatedRoute && (
-            <Card className="mb-4 border-slate-200">
+            <Card className="mb-4 border-slate-300">
               <CardHeader>
                 <CardTitle>สรุปหลังคำนวณ</CardTitle>
                 <CardDescription>
@@ -1642,7 +1634,7 @@ export default function Home() {
                   />
                 </div>
                 {(result.summary ?? []).length > 0 && (
-                  <div className="space-y-1 rounded-xl border border-slate-200 bg-[#F8FAFC] p-3 text-xs leading-relaxed text-slate-700">
+                  <div className="space-y-1 rounded-xl border border-slate-300 bg-[#F8FAFC] p-3 text-xs leading-relaxed text-slate-700 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
                     {result.summary.map((item) => (
                       <p key={item}>{item}</p>
                     ))}
@@ -1653,7 +1645,7 @@ export default function Home() {
           )}
           <div className="space-y-3">
             {!hasCalculatedRoute && (
-              <Card className="border-slate-200">
+              <Card className="border-slate-300">
                 <CardContent className="space-y-3 pt-4">
                   <p className="text-sm font-semibold">ตอนนี้แสดงเฉพาะตำแหน่งร้านทั้งหมด</p>
                   <p className="text-xs leading-relaxed text-muted-foreground">
@@ -1672,7 +1664,7 @@ export default function Home() {
               const orderCount = route.stops.filter((stop) => stop.orderId).length;
               const driverAsset = driverAssets[route.vehicleId];
               return (
-              <Card key={route.vehicleId} className="overflow-hidden border-slate-200">
+              <Card key={route.vehicleId} className="overflow-hidden border-slate-300">
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="flex items-center gap-2">
@@ -1715,7 +1707,7 @@ export default function Home() {
                     ))}
                   </div>
                   {driverAsset && (
-                    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 rounded-xl border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={driverAsset.qr} alt={`QR ${route.vehicleName}`} className="h-[88px] w-[88px] rounded-md border border-slate-100" />
                       <div className="min-w-0 space-y-2">
@@ -1743,8 +1735,8 @@ export default function Home() {
     </main>
     {editorModal && (
       <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm">
-        <div className="max-h-[92vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+        <div className="max-h-[92vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
+          <div className="flex items-center justify-between border-b border-slate-300 px-5 py-4">
             <div>
               <p className="text-base font-bold">
                 {editorModal.type === "branch" && "แก้ไขสาขา"}
@@ -1762,7 +1754,7 @@ export default function Home() {
             {editorModal.type === "branch" && selectedLocation && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Branch ID">
+                  <Field label="รหัสสาขา">
                     <Input value={selectedLocation.id} readOnly />
                   </Field>
                   <Field label="ประเภท">
@@ -2021,7 +2013,7 @@ function CostModelEditor({
   ];
 
   return (
-    <div className="rounded-[14px] border border-slate-200 bg-white p-3">
+    <div className="rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_16px_40px_rgba(15,23,42,0.14)]">
       <div className="mb-3 flex items-start gap-2">
         <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
           <Calculator className="h-4 w-4" />
