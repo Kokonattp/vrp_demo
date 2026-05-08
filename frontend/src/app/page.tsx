@@ -645,6 +645,17 @@ function clusterRunSummary(plan: ClusterCapacityPlan, result: ScenarioResult, mo
   ];
 }
 
+function optimizeModeLabel(mode: OptimizeMode) {
+  if (mode === "cluster-support") return "Cluster + support vehicle";
+  if (mode === "strict-cluster") return "Strict 1 vehicle / cluster";
+  return "Global optimize";
+}
+
+function capacityPercent(value: number, capacity: number | undefined) {
+  if (!capacity || capacity <= 0) return 0;
+  return Math.min(140, Math.round((value / capacity) * 100));
+}
+
 function buildLocalRouteNotes(orders: Order[], locations: LocationPoint[]) {
   const locationById = new Map(locations.map((location) => [location.id, location]));
   const notes: string[] = [];
@@ -1312,16 +1323,22 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="clusters" className="mt-4 space-y-4">
-              <Card className="border-slate-200">
-                <CardHeader>
-                  <CardTitle>Cluster planning</CardTitle>
-                  <CardDescription>จัดกลุ่มสาขาเป็น route template ก่อน optimize รอบส่งจริง</CardDescription>
+              <Card className="overflow-hidden border-slate-200 shadow-[0_14px_34px_rgba(15,23,42,0.08)]">
+                <CardHeader className="border-b border-slate-100 bg-white">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>Cluster planning</CardTitle>
+                      <CardDescription>Route template ก่อน optimize รอบส่งจริง</CardDescription>
+                    </div>
+                    <Badge variant="success">{optimizeModeLabel(optimizeMode)}</Badge>
+                  </div>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <Button variant="outline" className="w-full" onClick={generateClusters}>
-                    <Boxes className="h-4 w-4" />
-                    Generate clusters
-                  </Button>
+                <CardContent className="space-y-4 pt-4">
+                  <div className="grid grid-cols-3 gap-2">
+                    <RouteMetric label="Clusters" value={String(clusters.length)} />
+                    <RouteMetric label="Branches" value={String(locations.filter((location) => location.type === "store").length)} />
+                    <RouteMetric label="Orders" value={String(dailyOrders.length)} />
+                  </div>
                   <Field label="เลือก Cluster">
                     <select
                       className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-semibold text-foreground"
@@ -1347,18 +1364,38 @@ export default function Home() {
                     </select>
                   </Field>
                   {selectedClusterPlan && (
-                    <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                    <div className="rounded-xl border border-slate-200 bg-[#F8FAFC] p-3 text-sm">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <p className="font-semibold">Capacity check</p>
                         <Badge variant={selectedClusterPlan.status === "over" ? "warning" : "success"}>
                           {selectedClusterPlan.status === "fit" ? "รถหลักพอ" : selectedClusterPlan.status === "support" ? "ต้องมีรถเสริม" : "ยังเกิน"}
                         </Badge>
                       </div>
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <RouteMetric label="Primary" value={selectedClusterPlan.primaryVehicle?.name ?? "-"} />
-                        <RouteMetric label="Support" value={`${selectedClusterPlan.supportVehicles.length} คัน`} />
-                        <RouteMetric label="Demand" value={`${Math.round(selectedClusterPlan.totalWeight)} กก.`} />
-                        <RouteMetric label="CBM / Stops" value={`${selectedClusterPlan.totalCbm.toFixed(1)} / ${selectedClusterPlan.requiredStops}`} />
+                      <div className="mb-3 rounded-lg bg-white px-3 py-2 text-xs">
+                        <p className="font-semibold text-primary">{selectedClusterPlan.primaryVehicle?.name ?? "ยังไม่มี Vehicle"}</p>
+                        <p className="text-muted-foreground">
+                          Support {selectedClusterPlan.supportVehicles.length} คัน · {selectedClusterPlan.requiredStops} stops
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        <ProgressMetric
+                          label="Weight"
+                          value={selectedClusterPlan.totalWeight}
+                          capacity={selectedClusterPlan.primaryVehicle?.capacityKg}
+                          suffix="กก."
+                        />
+                        <ProgressMetric
+                          label="CBM"
+                          value={selectedClusterPlan.totalCbm}
+                          capacity={selectedClusterPlan.primaryVehicle?.capacityCbm}
+                          suffix="CBM"
+                        />
+                        <ProgressMetric
+                          label="Stops"
+                          value={selectedClusterPlan.requiredStops}
+                          capacity={selectedClusterPlan.primaryVehicle?.maxStops}
+                          suffix="stops"
+                        />
                       </div>
                       <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
                         {selectedClusterPlan.reasons.map((reason) => (
@@ -1377,19 +1414,24 @@ export default function Home() {
                       Optimize all
                     </Button>
                   </div>
+                  <Button variant="outline" className="w-full" onClick={generateClusters}>
+                    <Boxes className="h-4 w-4" />
+                    Generate clusters
+                  </Button>
                 </CardContent>
               </Card>
 
-              <div className="space-y-2">
+              <div className="grid gap-2">
                 {clusters.map((cluster) => {
                   const clusterOrders = dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId));
+                  const plan = buildClusterCapacityPlan(cluster, dailyOrders, vehicles, optimizeMode);
                   return (
                     <button
                       key={cluster.id}
                       type="button"
                       onClick={() => setSelectedClusterId(cluster.id)}
-                      className={`w-full rounded-xl border bg-white p-3 text-left transition-colors hover:bg-secondary ${
-                        selectedCluster?.id === cluster.id ? "border-primary shadow-[0_10px_24px_rgba(15,23,42,0.12)]" : "border-slate-200"
+                      className={`w-full rounded-xl border bg-white p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-[0_12px_24px_rgba(15,23,42,0.1)] ${
+                        selectedCluster?.id === cluster.id ? "border-primary shadow-[0_12px_28px_rgba(15,23,42,0.14)]" : "border-slate-200"
                       }`}
                     >
                       <div className="mb-2 flex items-center justify-between gap-3">
@@ -1397,11 +1439,12 @@ export default function Home() {
                           <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: cluster.color }} />
                           <span className="truncate">{cluster.name}</span>
                         </p>
-                        <Badge variant="muted">{clusterOrders.length} orders</Badge>
+                        <Badge variant={plan.status === "over" ? "warning" : "muted"}>{clusterOrders.length} orders</Badge>
                       </div>
-                      <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="grid grid-cols-3 gap-2 text-xs">
                         <RouteMetric label="Branches" value={String(cluster.branchIds.length)} />
-                        <RouteMetric label="Max stops" value={String(cluster.maxStops)} />
+                        <RouteMetric label="Vehicle" value={plan.primaryVehicle?.name.replace("รถ", "") ?? "-"} />
+                        <RouteMetric label="Status" value={plan.status === "fit" ? "Fit" : plan.status === "support" ? "Support" : "Over"} />
                       </div>
                       <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
                         {cluster.notes.map((note) => (
@@ -1502,6 +1545,21 @@ export default function Home() {
               แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
             </p>
           </div>
+          <div className="pointer-events-none absolute left-4 top-16 z-10 max-w-[260px] rounded-xl border border-border bg-white/95 p-3 shadow-[0_12px_28px_rgba(15,23,42,0.1)]">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold">Cluster legend</p>
+              <span className="text-[10px] text-muted-foreground">{optimizeModeLabel(optimizeMode)}</span>
+            </div>
+            <div className="grid gap-1.5">
+              {clusters.slice(0, 6).map((cluster) => (
+                <div key={cluster.id} className="flex items-center gap-2 text-[11px] text-slate-700">
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cluster.color }} />
+                  <span className="truncate">{cluster.name}</span>
+                  <span className="ml-auto text-muted-foreground">{cluster.branchIds.length}</span>
+                </div>
+              ))}
+            </div>
+          </div>
           <VrpMap
             locations={locations}
             orders={dailyOrders}
@@ -1514,21 +1572,41 @@ export default function Home() {
         </section>
 
         <aside className="overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:border-l lg:border-t-0">
-          <div className="mb-4 flex items-center justify-between rounded-[14px] border border-border bg-white p-3">
+          <div className="mb-4 rounded-[14px] border border-border bg-white p-3 shadow-[0_12px_28px_rgba(15,23,42,0.08)]">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold">Route plan</h2>
+                <p className="truncate text-xs text-muted-foreground">{selectedCluster?.name ?? "All clusters"} · {optimizeModeLabel(optimizeMode)}</p>
+              </div>
+              <Badge variant={result.status === "optimized" ? "success" : "warning"}>
+                {isRunning ? "กำลังคำนวณ" : hasCalculatedRoute ? statusLabel(result.status) : "Draft"}
+              </Badge>
+            </div>
             <div>
-              <h2 className="text-base font-semibold">แผนเส้นทาง</h2>
               <p className="text-sm text-muted-foreground">
                 {isRunning
                   ? "กำลังคำนวณเส้นถนนจริง..."
                   : hasCalculatedRoute
                     ? `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที · ${formatCurrency(result.totalCost)}`
-                    : "แสดงตำแหน่งร้านก่อน ยังไม่วาดเส้นทาง"}
+                    : "เลือก Cluster แล้วตรวจ Capacity ก่อน Optimize"}
               </p>
             </div>
-            <Badge variant={result.status === "optimized" ? "success" : "warning"}>
-              {isRunning ? "กำลังคำนวณ" : hasCalculatedRoute ? statusLabel(result.status) : "ยังไม่คำนวณ"}
-            </Badge>
           </div>
+          {selectedClusterPlan && (
+            <Card className="mb-4 border-slate-200">
+              <CardHeader>
+                <CardTitle>Cluster readiness</CardTitle>
+                <CardDescription>
+                  {selectedClusterPlan.primaryVehicle?.name ?? "-"} · {selectedClusterPlan.status === "fit" ? "ใช้รถหลักคันเดียวได้" : selectedClusterPlan.status === "support" ? "ต้องมี support vehicle" : "ยังเกิน capacity"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <ProgressMetric label="Weight" value={selectedClusterPlan.totalWeight} capacity={selectedClusterPlan.primaryVehicle?.capacityKg} suffix="กก." />
+                <ProgressMetric label="CBM" value={selectedClusterPlan.totalCbm} capacity={selectedClusterPlan.primaryVehicle?.capacityCbm} suffix="CBM" />
+                <ProgressMetric label="Stops" value={selectedClusterPlan.requiredStops} capacity={selectedClusterPlan.primaryVehicle?.maxStops} suffix="stops" />
+              </CardContent>
+            </Card>
+          )}
           {hasCalculatedRoute && result.routes.length > 0 && (
             <div className="mb-4 grid grid-cols-2 gap-2">
               <Button className="w-full" onClick={printWorkOrders}>
@@ -1898,6 +1976,29 @@ function RouteMetric({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl bg-[#F8FAFC] px-3 py-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="font-bold text-primary">{value}</div>
+    </div>
+  );
+}
+
+function ProgressMetric({ label, value, capacity, suffix }: { label: string; value: number; capacity?: number; suffix: string }) {
+  const percent = capacityPercent(value, capacity);
+  const isOver = percent > 100;
+  const displayValue = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  const displayCapacity = capacity === undefined ? "-" : Number.isInteger(capacity) ? String(capacity) : capacity.toFixed(1);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-semibold text-slate-700">{label}</span>
+        <span className={isOver ? "font-semibold text-amber-700" : "text-muted-foreground"}>
+          {displayValue} / {displayCapacity} {suffix}
+        </span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+        <div
+          className={isOver ? "h-full rounded-full bg-amber-500" : "h-full rounded-full bg-emerald-500"}
+          style={{ width: `${Math.min(100, percent)}%` }}
+        />
+      </div>
     </div>
   );
 }
