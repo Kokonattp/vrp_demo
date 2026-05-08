@@ -97,15 +97,42 @@
   gap: 4px;
 }
 
+.vrp-map-popup__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vrp-map-popup__pin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ffffff;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+}
+
 .vrp-map-popup strong {
   color: #1b2e4b;
   font-size: 13px;
   font-weight: 800;
+  min-width: 0;
 }
 
 .vrp-map-popup header span {
   color: #64748b;
   font-size: 11px;
+}
+
+.vrp-map-popup header em {
+  width: fit-content;
+  border-radius: 9999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  padding: 3px 8px;
 }
 
 .vrp-map-popup section {
@@ -150,6 +177,15 @@
 .vrp-marker--depot {
   width: 36px;
   height: 36px;
+}
+
+.vrp-marker--store:empty {
+  width: 22px;
+  height: 22px;
+  border-width: 3px;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--marker-color, #ef4444) 14%, transparent),
+    0 8px 18px rgba(15, 23, 42, 0.16);
 }
 
 .vrp-marker--store::after {

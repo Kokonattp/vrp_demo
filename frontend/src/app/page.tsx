@@ -4,9 +4,12 @@ import dynamic from "next/dynamic";
 import {
   Boxes,
   Calculator,
+  ChevronDown,
+  ChevronUp,
   CircleHelp,
   Download,
   FileUp,
+  MapPin,
   Play,
   Plus,
   Printer,
@@ -1177,6 +1180,9 @@ export default function Home() {
   const [savedRoutePlans, setSavedRoutePlans] = useState<SavedRoutePlan[]>(() => loadSavedRoutePlans());
   const [routingHealth, setRoutingHealth] = useState<RoutingHealth>({ status: "offline" });
   const [manualRouteSnapshots, setManualRouteSnapshots] = useState<Record<string, RoutePlan>>({});
+  const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({});
+  const [showCsvPaste, setShowCsvPaste] = useState(false);
+  const [showDailyOrdersPaste, setShowDailyOrdersPaste] = useState(false);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -1244,6 +1250,10 @@ export default function Home() {
       ],
     [result.routes, vehicles]
   );
+
+  const toggleHiddenSection = (id: string) => {
+    setHiddenSections((current) => ({ ...current, [id]: !current[id] }));
+  };
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -1903,13 +1913,19 @@ export default function Home() {
                       <CardTitle>ข้อมูลสาขา</CardTitle>
                       <CardDescription>นำเข้า CSV และแก้ข้อมูลสาขาในส่วนเดียวกัน</CardDescription>
                     </div>
-                    <Button variant="outline" size="sm" onClick={addBranch}>
-                      <Plus className="h-4 w-4" />
-                      เพิ่มสาขา
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => toggleHiddenSection("branch-data")}>
+                        {hiddenSections["branch-data"] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                        {hiddenSections["branch-data"] ? "แสดง" : "ซ่อน"}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={addBranch}>
+                        <Plus className="h-4 w-4" />
+                        เพิ่มสาขา
+                      </Button>
+                    </div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                {!hiddenSections["branch-data"] && <CardContent className="space-y-3">
                   <Field label="วันที่วางแผน">
                     <Input
                       type="date"
@@ -1926,39 +1942,67 @@ export default function Home() {
                     ดาวน์โหลด CSV template
                   </Button>
                   <Input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
-                  <Textarea
-                    value={csvText}
-                    onChange={(event) => setCsvText(event.target.value)}
-                    placeholder="วางข้อมูล CSV ที่ต้องการนำเข้า หรือเลือกไฟล์ CSV จากเครื่อง"
-                    className="min-h-20"
-                  />
+                  <div className="rounded-xl border border-slate-200 bg-[#F8FAFC] p-3 text-xs text-muted-foreground">
+                    {csvText.trim()
+                      ? `พร้อมนำเข้า ${csvText.split(/\r?\n/).filter(Boolean).length} บรรทัดจากไฟล์/ข้อความ CSV`
+                      : "เลือกไฟล์ CSV เพื่อ Import ข้อมูลสาขา โดยไม่ต้องแสดง header/ตัวแปรดิบในหน้า Planner"}
+                  </div>
+                  <Button variant="ghost" size="sm" className="w-full" onClick={() => setShowCsvPaste((current) => !current)}>
+                    {showCsvPaste ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    {showCsvPaste ? "ซ่อนช่องวาง CSV" : "วาง CSV ด้วยข้อความ"}
+                  </Button>
+                  {showCsvPaste && (
+                    <Textarea
+                      value={csvText}
+                      onChange={(event) => setCsvText(event.target.value)}
+                      placeholder="วางข้อมูล CSV ที่ต้องการนำเข้า"
+                      className="min-h-20"
+                    />
+                  )}
                   <Button className="w-full" onClick={importCsv}>
                     <Upload className="h-4 w-4" />
                     นำเข้าสาขา
                   </Button>
 
                   <div className="rounded-xl border border-slate-300 bg-white p-3 shadow-[0_12px_28px_rgba(15,23,42,0.10)]">
-                    <div className="mb-3">
-                      <p className="text-sm font-semibold text-primary">Import daily orders</p>
-                      <p className="text-xs text-muted-foreground">นำเข้าเฉพาะ Order รายวัน โดยใช้ master สาขาและ Cluster เดิม</p>
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-primary">Import daily orders</p>
+                        <p className="text-xs text-muted-foreground">นำเข้าเฉพาะ Order รายวัน โดยใช้ master สาขาและ Cluster เดิม</p>
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => toggleHiddenSection("daily-orders")}>
+                        {hiddenSections["daily-orders"] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                        {hiddenSections["daily-orders"] ? "แสดง" : "ซ่อน"}
+                      </Button>
                     </div>
-                    <div className="space-y-3">
+                    {!hiddenSections["daily-orders"] && <div className="space-y-3">
                       <Button variant="outline" className="w-full" onClick={downloadDailyOrdersCsvTemplate}>
                         <Download className="h-4 w-4" />
                         ดาวน์โหลด daily orders template
                       </Button>
                       <Input type="file" accept=".csv,text/csv" onChange={importDailyOrdersCsvFile} />
-                      <Textarea
-                        value={dailyOrdersCsvText}
-                        onChange={(event) => setDailyOrdersCsvText(event.target.value)}
-                        placeholder="วาง CSV: orderId,locationId,serviceDate,demandKg,cbm,serviceMinutes,timeMode,timeWindowStart,timeWindowEnd,priority"
-                        className="min-h-20"
-                      />
+                      <div className="rounded-xl border border-slate-200 bg-[#F8FAFC] p-3 text-xs text-muted-foreground">
+                        {dailyOrdersCsvText.trim()
+                          ? `พร้อมนำเข้า ${dailyOrdersCsvText.split(/\r?\n/).filter(Boolean).length} บรรทัดจาก daily orders CSV`
+                          : "เลือกไฟล์ daily orders CSV เพื่อ Import โดยไม่ต้องแสดง header/ตัวแปรดิบ"}
+                      </div>
+                      <Button variant="ghost" size="sm" className="w-full" onClick={() => setShowDailyOrdersPaste((current) => !current)}>
+                        {showDailyOrdersPaste ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        {showDailyOrdersPaste ? "ซ่อนช่องวาง CSV" : "วาง CSV ด้วยข้อความ"}
+                      </Button>
+                      {showDailyOrdersPaste && (
+                        <Textarea
+                          value={dailyOrdersCsvText}
+                          onChange={(event) => setDailyOrdersCsvText(event.target.value)}
+                          placeholder="วางข้อมูล daily orders CSV"
+                          className="min-h-20"
+                        />
+                      )}
                       <Button className="w-full" onClick={importDailyOrders}>
                         <Upload className="h-4 w-4" />
                         Import daily orders
                       </Button>
-                    </div>
+                    </div>}
                   </div>
 
                   <div className="border-t border-slate-300 pt-3" />
@@ -1980,19 +2024,24 @@ export default function Home() {
                       <p className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
                         คลิก marker บนแผนที่เพื่อเปิด popup และเลือกแก้ไขสาขานั้นได้เช่นกัน
                       </p>
-                      <div className="rounded-xl border border-slate-300 bg-white p-3 text-sm shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
-                        <div className="mb-2 flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate font-semibold">{selectedLocation.name}</p>
-                            <p className="text-xs text-muted-foreground">{selectedLocation.address || "ยังไม่ได้ใส่ที่อยู่"}</p>
+                      <div className="overflow-hidden rounded-2xl border border-slate-300 bg-white text-sm shadow-[0_16px_36px_rgba(15,23,42,0.14)]">
+                        <div className="flex items-start gap-3 border-b border-slate-100 bg-gradient-to-br from-[#EFF6FF] to-white p-4">
+                          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-[0_10px_22px_rgba(27,46,75,0.18)]">
+                            <MapPin className="h-5 w-5" />
                           </div>
-                          <Badge variant={selectedLocation.type === "depot" ? "default" : "muted"}>{locationTypeLabel(selectedLocation.type)}</Badge>
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-1 flex items-start justify-between gap-2">
+                              <p className="min-w-0 truncate text-base font-bold text-primary">{selectedLocation.name}</p>
+                              <Badge variant={selectedLocation.type === "depot" ? "default" : "muted"}>{locationTypeLabel(selectedLocation.type)}</Badge>
+                            </div>
+                            <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">{selectedLocation.address || "ยังไม่ได้ใส่ที่อยู่"}</p>
+                          </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <RouteMetric label="Lat/Lng" value={`${selectedLocation.lat.toFixed(4)}, ${selectedLocation.lng.toFixed(4)}`} />
-                          <RouteMetric label="Service" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.serviceMinutes ?? 15} นาที` : "-"} />
-                          <RouteMetric label="น้ำหนัก" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.weightKg ?? 120} กก.` : "-"} />
-                          <RouteMetric label="CBM" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.cbm ?? 1}` : "-"} />
+                        <div className="grid grid-cols-2 gap-2 p-3 text-xs">
+                          <RouteMetric label="พิกัด" value={`${selectedLocation.lat.toFixed(4)}, ${selectedLocation.lng.toFixed(4)}`} />
+                          <RouteMetric label="Cluster" value={selectedLocation.clusterId ?? "-"} />
+                          <RouteMetric label="Service" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.serviceMinutes ?? 15} นาที` : "จุดพัก/คลัง"} />
+                          <RouteMetric label="Demand" value={selectedLocation.type === "store" ? `${Math.round(selectedBranchOrder?.weightKg ?? 120)} กก. · ${selectedBranchOrder?.cbm ?? 1} CBM` : "-"} />
                         </div>
                       </div>
                       <Button className="w-full" onClick={() => setEditorModal({ type: "branch" })}>
@@ -2000,7 +2049,7 @@ export default function Home() {
                       </Button>
                     </>
                   )}
-                </CardContent>
+                </CardContent>}
               </Card>
             </TabsContent>
 

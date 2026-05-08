@@ -249,19 +249,18 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       }
     });
 
-    locations.forEach((location, index) => {
+    locations.forEach((location) => {
       const routeStop = routeStopByLocationId.get(location.id);
       const orderSummary = orderSummaryByLocationId.get(location.id);
-      const fallbackSequence = locations.slice(0, index + 1).filter((item) => item.type === "store").length;
-      const markerLabel = location.type === "depot" ? "D" : String(routeStop?.sequence ?? fallbackSequence);
+      const markerLabel = location.type === "depot" ? "D" : routeStop ? String(routeStop.sequence) : "";
       const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? clusterColorByLocationId[location.id] ?? storeMarkerColor;
-      const locationType = location.type === "depot" ? "คลังสินค้า" : "สาขา";
+      const locationType = location.type === "depot" ? "คลัง / จุดพักรถ" : "สาขา";
       const sequenceText =
         location.type === "depot"
-          ? "จุดเริ่มต้น/จุดกลับคลัง"
+          ? "จุดเริ่มต้น / จุดพัก / จุดกลับรถ"
           : routeStop
             ? `ลำดับส่งที่ ${routeStop.sequence}`
-            : `ตำแหน่งที่ ${fallbackSequence}`;
+            : "จุดสาขาใน master data";
       const routeText = routeStop ? `<span><b>รถ</b>${escapeHtml(routeStop.routeName)}</span>` : "";
       const orderText = routeStop?.orderIds.length ? `<span><b>ออเดอร์</b>${escapeHtml(routeStop.orderIds.join(", "))}</span>` : "";
       const arrivalText = routeStop ? `<span><b>ถึงประมาณ</b>${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
@@ -288,9 +287,10 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       const priorityText = orderSummary
         ? `<span><b>ความด่วน</b>${orderSummary.priorities.has("high") ? "ด่วน" : "ปกติ"}</span>`
         : "";
+      const statusChip = routeStop ? "อยู่ใน Route Plan" : orderSummary ? "มี Order วันนี้" : "ยังไม่มี Order วันนี้";
       const popupHtml = [
         `<div class="vrp-map-popup">`,
-        `<header><strong>${escapeHtml(location.name)}</strong><span>${locationType} · ${sequenceText}</span></header>`,
+        `<header><div class="vrp-map-popup__title"><span class="vrp-map-popup__pin" style="background:${markerColor}"></span><strong>${escapeHtml(location.name)}</strong></div><span>${locationType} · ${sequenceText}</span><em>${statusChip}</em></header>`,
         `<section>`,
         `<span><b>รหัส</b>${escapeHtml(location.id)}</span>`,
         addressText,
@@ -350,6 +350,23 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       markerRef.current[location.id] = marker;
     });
   }, [clusterColorByLocationId, locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !selectedLocationId) return;
+    const selected = locations.find((location) => location.id === selectedLocationId);
+    if (!selected || selected.type === "depot") return;
+    map.easeTo({
+      center: [selected.lng, selected.lat],
+      zoom: Math.max(map.getZoom(), 10.5),
+      duration: 650
+    });
+    const marker = markerRef.current[selected.id];
+    const popup = marker?.getPopup();
+    if (marker && popup) {
+      popup.setLngLat(marker.getLngLat()).addTo(map);
+    }
+  }, [locations, mapReady, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
