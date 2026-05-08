@@ -124,9 +124,10 @@ Implemented UI:
     - `City` overlays Mapbox Traffic v1 vector tiles for city-wide congestion when `NEXT_PUBLIC_MAPBOX_TOKEN` is set
   - route timeline with arrival time, drive time, service time, and warnings
   - saved route plans in browser local storage; users can reopen a saved plan with its route result, branches, vehicles, orders, cost model, planning date, and selected Cluster
-  - manual stop ordering via drag and drop inside each route card; this updates the planner route preview and should be followed by re-Optimize when road-routing geometry is required
+  - manual stop ordering via drag and drop inside each route card; this locks the edited sequence, calls `/api/route/manual`, and reroutes road geometry/distance/duration through the backend provider
+  - undo manual reorder per route
   - route summary
-  - `Export PDF` for the current Route Plan filter, including route drawing, stop list, per-stop weight / CBM, service time, and warnings
+  - `Export PDF` for the current Route Plan filter, plus `Export route PDF` for a single selected route, including route drawing, stop list, per-stop weight / CBM, service time, and warnings
   - print work order
   - QR driver
 - When the app is in fallback/offline mode, route lines are preview lines from stop sequence, not true road geometry. Real road geometry requires the backend routing provider to respond.
@@ -217,6 +218,30 @@ Backend Hugging Face Space was last pushed with cluster schema:
 
 ## Deployment Notes
 Frontend changes are pushed to GitHub `main`.
+
+Frontend env for Vercel / Next.js:
+
+```env
+HF_API_URL=https://nattp-vrp-demo-api.hf.space
+HF_TOKEN=hf_xxx
+NEXT_PUBLIC_MAPBOX_TOKEN=pk_xxx
+```
+
+Use `HF_API_URL` and `HF_TOKEN` as server-side env only. `NEXT_PUBLIC_MAPBOX_TOKEN` is intentionally public and only enables the UI city traffic tile layer.
+
+Backend env for Hugging Face Space:
+
+```env
+ROUTING_PROVIDER=mapbox
+MAPBOX_ACCESS_TOKEN=pk_xxx
+MAPBOX_PROFILE=mapbox/driving-traffic
+MAPBOX_TRAFFIC_BUCKETS=07:30,08:30,09:30,11:00,13:00,15:00,17:00,18:30
+MAPBOX_TRAFFIC_TIMEZONE_OFFSET=+07:00
+OSRM_BASE_URL=https://router.project-osrm.org
+FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app,http://localhost:3000
+```
+
+Manual stop reorder now calls `/api/route/manual`, which locks the user-edited stop order and reroutes the geometry/distance/duration through the backend routing provider.
 
 For backend changes, push subtree to Hugging Face:
 

@@ -118,3 +118,20 @@ export type OptimizeRequest = {
   orders: Order[];
   costModel: CostModel;
 };
+
+export type ManualRouteRequest = {
+  scenarioId: string;
+  route: RoutePlan;
+  locations: LocationPoint[];
+  vehicles: Vehicle[];
+  orders: Order[];
+  costModel: CostModel;
+};
+
+export type RoutingHealth = {
+  status: "ok" | "offline";
+  routingProvider?: string;
+  routingApi?: boolean;
+  trafficAware?: boolean;
+  ortools?: boolean;
+};

@@ -12,6 +12,8 @@ import {
   Printer,
   QrCode,
   Route,
+  RotateCcw,
+  Settings,
   Smartphone,
   Truck,
   Upload,
@@ -28,7 +30,20 @@ import { Textarea } from "@/components/ui/textarea";
 import QRCode from "qrcode";
 import { buildDriverRoutePayload, encodeDriverPayload, minutesToClock, type DriverRoutePayload } from "@/lib/driver-payload";
 import { routeColors, sampleLocations, sampleOrders, sampleVehicles } from "@/lib/sample-data";
-import type { ClusterTemplate, Coordinate, CostModel, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
+import type {
+  ClusterTemplate,
+  Coordinate,
+  CostModel,
+  LocationPoint,
+  ManualRouteRequest,
+  OptimizeRequest,
+  Order,
+  RoutePlan,
+  RouteStop,
+  RoutingHealth,
+  ScenarioResult,
+  Vehicle
+} from "@/types/vrp";
 
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
@@ -272,6 +287,40 @@ function buildScenarioSummary(
   if (unassignedOrders.length) summary.push(`มีออเดอร์ยังไม่ถูกจัด ${unassignedOrders.length} รายการ`);
   if (warnings.length) summary.push(`มีข้อเตือน ${warnings.length} รายการ เช่น ${warnings[0]}`);
   return summary;
+}
+
+function mergeRoutesIntoScenario(
+  scenario: ScenarioResult,
+  routes: RoutePlan[],
+  costModel: CostModel,
+  summaryPrefix?: string,
+  status?: ScenarioResult["status"]
+): ScenarioResult {
+  const costBreakdown = buildCostBreakdown(routes, scenario.unassignedOrders, costModel);
+  const nextStatus = status ?? scenario.status;
+  const summary = buildScenarioSummary(nextStatus, routes, scenario.unassignedOrders, scenario.warnings, costBreakdown);
+  return {
+    ...scenario,
+    status: nextStatus,
+    objective: costBreakdown.totalCost,
+    routes,
+    totalDistanceKm: Number(routes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)),
+    totalDurationMinutes: routes.reduce((sum, route) => sum + route.durationMinutes, 0),
+    totalCost: costBreakdown.totalCost,
+    costBreakdown,
+    summary: summaryPrefix ? [summaryPrefix, ...summary.filter((item) => item !== summaryPrefix)] : summary
+  };
+}
+
+function replaceRouteInScenario(
+  scenario: ScenarioResult,
+  route: RoutePlan,
+  costModel: CostModel,
+  summaryPrefix?: string,
+  status?: ScenarioResult["status"]
+) {
+  const routes = scenario.routes.map((candidate) => (candidate.vehicleId === route.vehicleId ? route : candidate));
+  return mergeRoutesIntoScenario(scenario, routes, costModel, summaryPrefix, status);
 }
 
 function buildLocalFallback(
@@ -909,6 +958,13 @@ function routeStopGeometry(stops: RouteStop[]): Coordinate[] {
   return stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }));
 }
 
+function routeOrderSignature(route: RoutePlan) {
+  return route.stops
+    .filter((stop) => stop.orderId)
+    .map((stop) => stop.orderId)
+    .join("|");
+}
+
 function rebuildManualRoute(route: RoutePlan, stops: RouteStop[], orders: Order[]): RoutePlan {
   const ordersById = orderByIdMap(orders);
   let elapsed = stops[0]?.arrivalMinutes ?? 8 * 60;
@@ -1117,7 +1173,10 @@ export default function Home() {
   const [optimizeMode, setOptimizeMode] = useState<OptimizeMode>("cluster-support");
   const [routePlanFilter, setRoutePlanFilter] = useState<RoutePlanFilter>("all");
   const [printMode, setPrintMode] = useState<PrintMode>(null);
+  const [routePlanPrintRoutes, setRoutePlanPrintRoutes] = useState<RoutePlan[] | null>(null);
   const [savedRoutePlans, setSavedRoutePlans] = useState<SavedRoutePlan[]>(() => loadSavedRoutePlans());
+  const [routingHealth, setRoutingHealth] = useState<RoutingHealth>({ status: "offline" });
+  const [manualRouteSnapshots, setManualRouteSnapshots] = useState<Record<string, RoutePlan>>({});
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -1174,6 +1233,7 @@ export default function Home() {
     () => result.routes.filter((route) => routeMatchesPlanFilter(route, vehicles, routePlanFilter)),
     [result.routes, routePlanFilter, vehicles]
   );
+  const hasCityTrafficToken = Boolean(process.env.NEXT_PUBLIC_MAPBOX_TOKEN?.trim());
   const routePlanFilterOptions = useMemo(
     () =>
       [
@@ -1235,7 +1295,10 @@ export default function Home() {
   }, [driverPayloads]);
 
   useEffect(() => {
-    const resetPrintMode = () => setPrintMode(null);
+    const resetPrintMode = () => {
+      setPrintMode(null);
+      setRoutePlanPrintRoutes(null);
+    };
     window.addEventListener("afterprint", resetPrintMode);
     return () => window.removeEventListener("afterprint", resetPrintMode);
   }, []);
@@ -1247,13 +1310,18 @@ export default function Home() {
     fetch(`${API_URL}/api/health`, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
+          setRoutingHealth({ status: "offline" });
           setOptimizerState("offline");
           return;
         }
-        const health = (await response.json()) as { trafficAware?: boolean; routingProvider?: string };
+        const health = (await response.json()) as RoutingHealth;
+        setRoutingHealth(health);
         setOptimizerState(health.trafficAware || health.routingProvider === "google" || health.routingProvider === "mapbox" ? "traffic" : "ready");
       })
-      .catch(() => setOptimizerState("offline"))
+      .catch(() => {
+        setRoutingHealth({ status: "offline" });
+        setOptimizerState("offline");
+      })
       .finally(() => window.clearTimeout(timer));
 
     return () => {
@@ -1330,6 +1398,7 @@ export default function Home() {
         : optimizedRaw;
       setResult(optimized);
       setHasCalculatedRoute(true);
+      setManualRouteSnapshots({});
     } finally {
       setIsRunning(false);
       if (!options?.keepPanel) {
@@ -1387,6 +1456,7 @@ export default function Home() {
       const merged = mergeScenarioResults(`${scenarioName || "scenario"}-clusters`, results);
       setResult(merged);
       setHasCalculatedRoute(true);
+      setManualRouteSnapshots({});
       setActivePanel("run");
     } finally {
       setIsRunning(false);
@@ -1428,6 +1498,7 @@ export default function Home() {
     setOptimizeMode(plan.optimizeMode);
     setResult(plan.result);
     setHasCalculatedRoute(Boolean(plan.result.routes.length));
+    setManualRouteSnapshots({});
     setActivePanel("run");
     setRoutePlanFilter("all");
   };
@@ -1440,7 +1511,8 @@ export default function Home() {
     });
   };
 
-  const reorderRouteStop = (routeId: string, draggedOrderId: string, targetOrderId: string) => {
+  /*
+  const reorderRouteStopLegacy = (routeId: string, draggedOrderId: string, targetOrderId: string) => {
     if (draggedOrderId === targetOrderId) return;
     setResult((current) => ({
       ...current,
@@ -1463,6 +1535,83 @@ export default function Home() {
         return rebuildManualRoute(route, [depotStart, ...nextDeliveryStops, depotEnd], dailyOrders);
       })
     }));
+    setHasCalculatedRoute(true);
+  };
+  */
+
+  const rerouteManualRoute = useCallback(async (manualRoute: RoutePlan) => {
+    const payload: ManualRouteRequest = {
+      scenarioId: result.scenarioId,
+      route: manualRoute,
+      locations,
+      vehicles,
+      orders: dailyOrders,
+      costModel
+    };
+
+    try {
+      const response = await fetch(`${API_URL}/api/route/manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`Manual route returned ${response.status}`);
+      const rerouted = (await response.json()) as RoutePlan;
+      setResult((current) => {
+        const currentRoute = current.routes.find((route) => route.vehicleId === manualRoute.vehicleId);
+        if (!currentRoute || routeOrderSignature(currentRoute) !== routeOrderSignature(manualRoute)) return current;
+        return replaceRouteInScenario(current, rerouted, costModel, "Manual sequence: rerouted by backend with locked stop order.", current.status);
+      });
+      setHasCalculatedRoute(true);
+    } catch {
+      setOptimizerState("offline");
+      setResult((current) => {
+        const currentRoute = current.routes.find((route) => route.vehicleId === manualRoute.vehicleId);
+        if (!currentRoute || routeOrderSignature(currentRoute) !== routeOrderSignature(manualRoute)) return current;
+        return replaceRouteInScenario(
+          current,
+          {
+            ...manualRoute,
+            routeNotes: [
+              "Manual sequence: backend unavailable, showing local estimated sequence.",
+              ...(manualRoute.routeNotes ?? []).filter((note) => !note.startsWith("Manual sequence: backend unavailable"))
+            ]
+          },
+          costModel,
+          "Manual sequence: backend unavailable, showing local estimate.",
+          current.status === "optimized" ? "fallback" : current.status
+        );
+      });
+    }
+  }, [costModel, dailyOrders, locations, result.scenarioId, vehicles]);
+
+  const reorderRouteStop = (routeId: string, draggedOrderId: string, targetOrderId: string) => {
+    if (draggedOrderId === targetOrderId) return;
+    const route = result.routes.find((candidate) => candidate.vehicleId === routeId);
+    if (!route) return;
+    const depotStart = route.stops[0];
+    const depotEnd = route.stops[route.stops.length - 1];
+    const deliveryStops = route.stops.filter((stop) => stop.orderId);
+    const fromIndex = deliveryStops.findIndex((stop) => stop.orderId === draggedOrderId);
+    const toIndex = deliveryStops.findIndex((stop) => stop.orderId === targetOrderId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const nextDeliveryStops = [...deliveryStops];
+    const [moved] = nextDeliveryStops.splice(fromIndex, 1);
+    nextDeliveryStops.splice(toIndex, 0, moved);
+    const localPreviewRoute = rebuildManualRoute(route, [depotStart, ...nextDeliveryStops, depotEnd], dailyOrders);
+    setManualRouteSnapshots((current) => (current[routeId] ? current : { ...current, [routeId]: route }));
+    setResult((current) =>
+      replaceRouteInScenario(current, localPreviewRoute, costModel, "Manual sequence: stop order changed; rerouting with backend.", current.status)
+    );
+    setHasCalculatedRoute(true);
+    void rerouteManualRoute(localPreviewRoute);
+  };
+
+  const undoManualRoute = (routeId: string) => {
+    const snapshot = manualRouteSnapshots[routeId];
+    if (!snapshot) return;
+    setResult((current) => replaceRouteInScenario(current, snapshot, costModel, "Manual sequence undone for selected route.", current.status));
+    setManualRouteSnapshots((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== routeId)));
     setHasCalculatedRoute(true);
   };
 
@@ -1558,7 +1707,8 @@ export default function Home() {
     window.setTimeout(() => window.print(), 50);
   };
 
-  const exportRoutePlanPdf = () => {
+  const exportRoutePlanPdf = (routesToPrint: RoutePlan[] = filteredRoutes) => {
+    setRoutePlanPrintRoutes(routesToPrint);
     setPrintMode("route-plan");
     window.setTimeout(() => window.print(), 50);
   };
@@ -2123,6 +2273,7 @@ export default function Home() {
               </p>
             </div>
           </div>
+          <RoutingConfigStatus health={routingHealth} optimizerState={optimizerState} hasCityTrafficToken={hasCityTrafficToken} />
           <Card className="mb-4 border-slate-300">
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-3">
@@ -2178,7 +2329,7 @@ export default function Home() {
                 <Printer className="h-4 w-4" />
                 พิมพ์ใบงาน
               </Button>
-              <Button variant="outline" className="w-full" onClick={exportRoutePlanPdf} disabled={!filteredRoutes.length}>
+              <Button variant="outline" className="w-full" onClick={() => exportRoutePlanPdf()} disabled={!filteredRoutes.length}>
                 <Download className="h-4 w-4" />
                 Export PDF
               </Button>
@@ -2317,6 +2468,16 @@ export default function Home() {
                     </div>
                   )}
                   <RouteTimeline route={route} stops={displayStops} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button variant="outline" size="sm" onClick={() => exportRoutePlanPdf([route])}>
+                      <Download className="h-4 w-4" />
+                      Export route PDF
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => undoManualRoute(route.vehicleId)} disabled={!manualRouteSnapshots[route.vehicleId]}>
+                      <RotateCcw className="h-4 w-4" />
+                      Undo reorder
+                    </Button>
+                  </div>
                   <ManualStopOrder route={route} orders={dailyOrders} onReorder={reorderRouteStop} />
                   {driverAsset && (
                     <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 rounded-xl border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
@@ -2560,7 +2721,7 @@ export default function Home() {
     {printMode === "workorders" && <WorkOrdersPrint payloads={driverPayloads} assets={driverAssets} />}
     {printMode === "route-plan" && (
       <RoutePlanReportPrint
-        routes={filteredRoutes}
+        routes={routePlanPrintRoutes ?? filteredRoutes}
         orders={dailyOrders}
         planningDate={planningDate}
         scenarioId={result.scenarioId}
@@ -2590,6 +2751,42 @@ function RouteMetric({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl bg-[#F8FAFC] px-3 py-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="font-bold text-primary">{value}</div>
+    </div>
+  );
+}
+
+function RoutingConfigStatus({
+  health,
+  optimizerState,
+  hasCityTrafficToken
+}: {
+  health: RoutingHealth;
+  optimizerState: OptimizerState;
+  hasCityTrafficToken: boolean;
+}) {
+  const provider = health.routingProvider ?? (optimizerState === "offline" ? "offline" : "unknown");
+  const providerLabel = provider === "google" ? "Google Routes" : provider === "mapbox" ? "Mapbox Traffic" : provider === "osrm" ? "OSRM" : provider;
+  const routeTraffic = Boolean(health.trafficAware);
+  const routeBadge: "warning" | "success" | "muted" = optimizerState === "offline" ? "warning" : routeTraffic ? "success" : "muted";
+  return (
+    <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+            <Settings className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">Traffic / Config</p>
+            <p className="truncate text-xs text-muted-foreground">Route geometry uses backend provider: {providerLabel}</p>
+          </div>
+        </div>
+        <Badge variant={routeBadge}>{optimizerState === "offline" ? "Offline" : routeTraffic ? "Traffic ON" : "No traffic"}</Badge>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <RouteMetric label="Routing API" value={health.routingApi ? "Connected" : "Fallback"} />
+        <RouteMetric label="OR-Tools" value={health.ortools ? "Ready" : "Fallback"} />
+        <RouteMetric label="City traffic" value={hasCityTrafficToken ? "Tile layer" : "No token"} />
+      </div>
     </div>
   );
 }

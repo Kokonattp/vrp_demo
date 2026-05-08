@@ -140,6 +140,15 @@ class RoutePlan(BaseModel):
     geometry: list[Coordinate]
 
 
+class ManualRouteRequest(BaseModel):
+    scenarioId: str
+    route: RoutePlan
+    locations: list[LocationPoint]
+    vehicles: list[Vehicle]
+    orders: list[Order]
+    costModel: CostModel = Field(default_factory=CostModel)
+
+
 class ScenarioResult(BaseModel):
     scenarioId: str
     status: Literal["optimized", "fallback", "infeasible"]
@@ -326,6 +335,134 @@ async def optimize(request: OptimizeRequest):
         routing_warning,
     )
     return result
+
+
+@app.post("/api/route/manual", response_model=RoutePlan)
+async def reroute_manual_route(request: ManualRouteRequest):
+    if not request.route.stops:
+        return request.route
+
+    location_by_id = {location.id: location for location in request.locations}
+    order_by_id = {order.id: order for order in request.orders}
+    vehicle = next(
+        (
+            candidate
+            for candidate in request.vehicles
+            if candidate.id == request.route.vehicleId or candidate.name == request.route.vehicleName
+        ),
+        None,
+    )
+
+    start_location_id = request.route.stops[0].locationId
+    end_location_id = request.route.stops[-1].locationId
+    start_location = location_by_id.get(start_location_id) or next(
+        (location for location in request.locations if location.type == "depot"),
+        request.locations[0],
+    )
+    end_location = location_by_id.get(end_location_id) or start_location
+    ordered_orders = [order_by_id[stop.orderId] for stop in request.route.stops if stop.orderId in order_by_id]
+    route_locations = [start_location]
+    route_orders: list[Order | None] = [None]
+    for order in ordered_orders:
+        location = location_by_id.get(order.locationId)
+        if not location:
+            continue
+        route_locations.append(location)
+        route_orders.append(order)
+    route_locations.append(end_location)
+    route_orders.append(None)
+
+    if len(route_locations) <= 2:
+        return request.route
+
+    distance_matrix, duration_matrix, routing_warning = await build_matrices(route_locations, route_orders)
+    elapsed = request.route.stops[0].arrivalMinutes or 8 * 60
+    start_minutes = elapsed
+    route_distance = 0.0
+    route_duration = 0
+    load_kg = 0.0
+    load_cbm = 0.0
+    warnings: list[str] = []
+    stops: list[RouteStop] = []
+
+    for index, location in enumerate(route_locations):
+        order = route_orders[index]
+        if index > 0:
+            previous = index - 1
+            route_distance += distance_matrix[previous][index]
+            route_duration += duration_matrix[previous][index]
+            elapsed += duration_matrix[previous][index]
+
+        stop_warnings: list[str] = []
+        if order:
+            if is_fixed_order(order) and elapsed < time_to_minutes(order.timeWindowStart):
+                elapsed = time_to_minutes(order.timeWindowStart)
+            if is_fixed_order(order) and elapsed > time_to_minutes(order.timeWindowEnd):
+                stop_warnings.append("Time window")
+                warnings.append(f"{order.id} misses {order.timeWindowEnd}")
+            load_kg += order.weightKg
+            load_cbm += order.cbm
+
+        stops.append(
+            RouteStop(
+                locationId=location.id,
+                orderId=order.id if order else None,
+                name=location.name,
+                lat=location.lat,
+                lng=location.lng,
+                arrivalMinutes=int(elapsed),
+                loadKg=round(load_kg, 2),
+                loadCbm=round(load_cbm, 2),
+                serviceMinutes=order.serviceMinutes if order else 0,
+                warnings=stop_warnings,
+            )
+        )
+
+        if order:
+            elapsed += order.serviceMinutes
+
+    if vehicle:
+        if load_kg > vehicle.capacityKg:
+            warnings.append(f"{vehicle.name} capacity kg exceeded")
+        if load_cbm > vehicle.capacityCbm:
+            warnings.append(f"{vehicle.name} capacity CBM exceeded")
+        if len(ordered_orders) > vehicle.maxStops:
+            warnings.append(f"{vehicle.name} max stops exceeded")
+
+    if routing_warning:
+        warnings.append(routing_warning)
+
+    duration_minutes = max(0, int(round(elapsed - start_minutes)))
+    late_stop_count = sum(1 for stop in stops for warning in stop.warnings if warning == "Time window")
+    route_cost = calculate_route_cost(route_distance, duration_minutes, late_stop_count, request.costModel)
+    geometry = await build_route_geometry(route_locations)
+    provider = active_routing_provider()
+    route_notes = [
+        f"Manual sequence rerouted with {provider} using locked stop order.",
+        f"Traffic-aware: {'yes' if provider in {'google', 'mapbox'} and active_routing_profile_is_traffic_aware() else 'no'}",
+    ]
+    if routing_warning:
+        route_notes.append(routing_warning)
+
+    return RoutePlan(
+        vehicleId=request.route.vehicleId,
+        vehicleName=request.route.vehicleName,
+        color=request.route.color,
+        stops=stops,
+        distanceKm=round(route_distance, 1),
+        durationMinutes=duration_minutes,
+        loadKg=round(load_kg, 1),
+        loadCbm=round(load_cbm, 1),
+        warnings=warnings,
+        routeNotes=route_notes,
+        fixedCost=route_cost["fixedCost"],
+        distanceCost=route_cost["distanceCost"],
+        timeCost=route_cost["timeCost"],
+        overtimeCost=route_cost["overtimeCost"],
+        latePenalty=route_cost["latePenalty"],
+        totalCost=route_cost["totalCost"],
+        geometry=geometry,
+    )
 
 
 async def build_matrices(
