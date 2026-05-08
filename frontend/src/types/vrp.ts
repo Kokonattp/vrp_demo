@@ -8,6 +8,13 @@ export type LocationPoint = Coordinate & {
   name: string;
   type: "depot" | "store";
   address?: string;
+  clusterId?: string;
+  clusterLocked?: boolean;
+  preferredDays?: string[];
+  preferredTimeWindow?: string;
+  serviceFrequency?: "daily" | "weekly" | "biweekly" | "monthly";
+  zoneHint?: string;
+  vehicleRestriction?: string;
 };
 
 export type Vehicle = {
@@ -89,6 +96,18 @@ export type ScenarioResult = {
   unassignedOrders: string[];
   warnings: string[];
   routes: RoutePlan[];
+};
+
+export type ClusterTemplate = {
+  id: string;
+  name: string;
+  color: string;
+  serviceDays: string[];
+  branchIds: string[];
+  anchorLocationId?: string;
+  preferredVehicleType?: string;
+  maxStops: number;
+  notes: string[];
 };
 
 export type OptimizeRequest = {

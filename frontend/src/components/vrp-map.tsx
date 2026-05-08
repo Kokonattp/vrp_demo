@@ -14,6 +14,7 @@ type VrpMapProps = {
   orders: Order[];
   routes: RoutePlan[];
   selectedLocationId?: string;
+  clusterColorByLocationId?: Record<string, string>;
   onLocationSelect?: (id: string) => void;
   onLocationMove: (id: string, coordinate: Coordinate) => void;
 };
@@ -40,7 +41,7 @@ function minutesToTime(value: number) {
   return `${hours}:${minutes}`;
 }
 
-export function VrpMap({ locations, orders, routes, selectedLocationId, onLocationSelect, onLocationMove }: VrpMapProps) {
+export function VrpMap({ locations, orders, routes, selectedLocationId, clusterColorByLocationId = {}, onLocationSelect, onLocationMove }: VrpMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
@@ -186,7 +187,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
       const orderSummary = orderSummaryByLocationId.get(location.id);
       const fallbackSequence = locations.slice(0, index + 1).filter((item) => item.type === "store").length;
       const markerLabel = location.type === "depot" ? "D" : String(routeStop?.sequence ?? fallbackSequence);
-      const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? storeMarkerColor;
+      const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? clusterColorByLocationId[location.id] ?? storeMarkerColor;
       const locationType = location.type === "depot" ? "คลังสินค้า" : "สาขา";
       const sequenceText =
         location.type === "depot"
@@ -281,7 +282,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, onLocati
 
       markerRef.current[location.id] = marker;
     });
-  }, [locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+  }, [clusterColorByLocationId, locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;

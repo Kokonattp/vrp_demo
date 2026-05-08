@@ -23,7 +23,8 @@ export const sampleLocations: LocationPoint[] = [
     type: "store",
     lat: 13.7246,
     lng: 100.5347,
-    address: "สีลม, บางรัก, กรุงเทพมหานคร"
+    address: "สีลม, บางรัก, กรุงเทพมหานคร",
+    clusterId: "cluster-1"
   },
   {
     id: "store-ari",
@@ -31,7 +32,8 @@ export const sampleLocations: LocationPoint[] = [
     type: "store",
     lat: 13.7801,
     lng: 100.5446,
-    address: "อารีย์, พญาไท, กรุงเทพมหานคร"
+    address: "อารีย์, พญาไท, กรุงเทพมหานคร",
+    clusterId: "cluster-2"
   },
   {
     id: "store-thonglor",
@@ -39,7 +41,8 @@ export const sampleLocations: LocationPoint[] = [
     type: "store",
     lat: 13.7307,
     lng: 100.5826,
-    address: "ทองหล่อ, วัฒนา, กรุงเทพมหานคร"
+    address: "ทองหล่อ, วัฒนา, กรุงเทพมหานคร",
+    clusterId: "cluster-3"
   },
   {
     id: "store-rama9",
@@ -47,7 +50,8 @@ export const sampleLocations: LocationPoint[] = [
     type: "store",
     lat: 13.7579,
     lng: 100.565,
-    address: "พระราม 9, ห้วยขวาง, กรุงเทพมหานคร"
+    address: "พระราม 9, ห้วยขวาง, กรุงเทพมหานคร",
+    clusterId: "cluster-2"
   },
   {
     id: "store-bangna",
@@ -55,7 +59,8 @@ export const sampleLocations: LocationPoint[] = [
     type: "store",
     lat: 13.6682,
     lng: 100.6047,
-    address: "บางนา, กรุงเทพมหานคร"
+    address: "บางนา, กรุงเทพมหานคร",
+    clusterId: "cluster-3"
   }
 ];
 

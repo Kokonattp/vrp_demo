@@ -55,6 +55,13 @@ class LocationPoint(Coordinate):
     name: str
     type: Literal["depot", "store"]
     address: str | None = None
+    clusterId: str | None = None
+    clusterLocked: bool = False
+    preferredDays: list[str] = Field(default_factory=list)
+    preferredTimeWindow: str | None = None
+    serviceFrequency: Literal["daily", "weekly", "biweekly", "monthly"] | None = None
+    zoneHint: str | None = None
+    vehicleRestriction: str | None = None
 
 
 class Vehicle(BaseModel):

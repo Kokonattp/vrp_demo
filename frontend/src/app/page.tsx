@@ -31,7 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import QRCode from "qrcode";
 import { buildDriverRoutePayload, encodeDriverPayload, minutesToClock, type DriverRoutePayload } from "@/lib/driver-payload";
 import { initialScenarioComparison, routeColors, sampleLocations, sampleOrders, sampleVehicles } from "@/lib/sample-data";
-import type { Coordinate, CostModel, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
+import type { ClusterTemplate, Coordinate, CostModel, LocationPoint, OptimizeRequest, Order, RoutePlan, RouteStop, ScenarioResult, Vehicle } from "@/types/vrp";
 
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
@@ -72,9 +72,12 @@ function buildBranchCsvTemplate(baseDate: string) {
 
 const panels = [
   { id: "upload", label: "Branch data", icon: FileUp },
+  { id: "clusters", label: "Cluster", icon: Boxes },
   { id: "vehicles", label: "Vehicle", icon: Truck },
   { id: "run", label: "Order / Optimize", icon: Play }
 ] as const;
+
+const clusterColors = ["#0F766E", "#D97706", "#2563EB", "#7C3AED", "#E11D48", "#475569"];
 
 type OptimizerState = "warming" | "ready" | "traffic" | "offline";
 type EditorModalState =
@@ -404,6 +407,122 @@ function distanceBetweenLocations(leftId: string, rightId: string, locationById:
   return distanceKm(left, right);
 }
 
+function buildClusterTemplates(
+  locations: LocationPoint[],
+  orders: Order[],
+  vehicles: Vehicle[],
+  planningDate: string
+): ClusterTemplate[] {
+  const stores = locations.filter((location) => location.type === "store");
+  const defaultMaxStops = Math.max(3, Math.min(...vehicles.map((vehicle) => vehicle.maxStops).filter(Boolean), 6));
+  const clusterIds = Array.from(new Set(stores.map((location) => location.clusterId || "unassigned")));
+  return clusterIds.map((clusterId, index) => {
+    const branchIds = stores.filter((location) => (location.clusterId || "unassigned") === clusterId).map((location) => location.id);
+    const clusterOrders = orders.filter((order) => order.serviceDate === planningDate && branchIds.includes(order.locationId));
+    const fixedOrder = clusterOrders.find((order) => order.timeMode === "fixed");
+    const anchorLocationId = fixedOrder?.locationId ?? branchIds[0];
+    const totalWeight = clusterOrders.reduce((sum, order) => sum + order.weightKg, 0);
+    const totalCbm = clusterOrders.reduce((sum, order) => sum + order.cbm, 0);
+    const notes = [
+      `${branchIds.length} branches · ${clusterOrders.length} orders`,
+      fixedOrder ? `Anchor time ${fixedOrder.timeWindowStart}-${fixedOrder.timeWindowEnd}` : "Flexible cluster",
+      `Load ${Math.round(totalWeight)} kg · ${totalCbm.toFixed(1)} CBM`
+    ];
+    return {
+      id: clusterId,
+      name: clusterId === "unassigned" ? "Unassigned" : `Cluster ${index + 1}`,
+      color: clusterColors[index % clusterColors.length],
+      serviceDays: [planningDate],
+      branchIds,
+      anchorLocationId,
+      maxStops: defaultMaxStops,
+      notes
+    };
+  });
+}
+
+function generateClusterAssignments(locations: LocationPoint[], orders: Order[], vehicles: Vehicle[], planningDate: string) {
+  const depot = locations.find((location) => location.type === "depot") ?? locations[0];
+  const stores = locations.filter((location) => location.type === "store");
+  const maxStops = Math.max(3, Math.min(...vehicles.map((vehicle) => vehicle.maxStops).filter(Boolean), 6));
+  const locationById = new Map(locations.map((location) => [location.id, location]));
+  const dailyOrders = orders.filter((order) => order.serviceDate === planningDate);
+  const fixedLocationIds = new Set(dailyOrders.filter((order) => order.timeMode === "fixed").map((order) => order.locationId));
+  const sortedStores = [...stores].sort((a, b) => {
+    const aFixed = fixedLocationIds.has(a.id) ? 0 : 1;
+    const bFixed = fixedLocationIds.has(b.id) ? 0 : 1;
+    const aAngle = Math.atan2(a.lat - depot.lat, a.lng - depot.lng);
+    const bAngle = Math.atan2(b.lat - depot.lat, b.lng - depot.lng);
+    const aDistance = distanceKm(depot, a);
+    const bDistance = distanceKm(depot, b);
+    return aFixed - bFixed || aAngle - bAngle || aDistance - bDistance;
+  });
+
+  const generated = new Map<string, string>();
+  let clusterIndex = 1;
+  for (let index = 0; index < sortedStores.length; index += maxStops) {
+    const clusterId = `cluster-${clusterIndex}`;
+    sortedStores.slice(index, index + maxStops).forEach((location) => generated.set(location.id, clusterId));
+    clusterIndex += 1;
+  }
+
+  return locations.map((location) => {
+    if (location.type === "depot") return location;
+    if (location.clusterLocked && location.clusterId) return location;
+    const nearestFixed = dailyOrders
+      .filter((order) => order.timeMode === "fixed")
+      .map((order) => locationById.get(order.locationId))
+      .filter(Boolean)
+      .reduce<{ location: LocationPoint | undefined; distance: number }>(
+        (best, fixedLocation) => {
+          if (!fixedLocation) return best;
+          const value = distanceKm(location, fixedLocation);
+          return value < best.distance ? { location: fixedLocation, distance: value } : best;
+        },
+        { location: undefined, distance: Number.POSITIVE_INFINITY }
+      );
+    if (nearestFixed.location && nearestFixed.distance <= 6 && nearestFixed.location.clusterId) {
+      return { ...location, clusterId: nearestFixed.location.clusterId };
+    }
+    return { ...location, clusterId: generated.get(location.id) ?? "cluster-1" };
+  });
+}
+
+function mergeScenarioResults(scenarioId: string, results: ScenarioResult[]): ScenarioResult {
+  const routes = results.flatMap((result, resultIndex) =>
+    result.routes.map((route) => ({
+      ...route,
+      vehicleId: `${result.scenarioId}-${route.vehicleId}`,
+      vehicleName: `${result.scenarioId} · ${route.vehicleName}`,
+      color: clusterColors[resultIndex % clusterColors.length]
+    }))
+  );
+  const unassignedOrders = results.flatMap((result) => result.unassignedOrders);
+  const warnings = results.flatMap((result) => result.warnings);
+  const costBreakdown = results.reduce<Record<string, number>>((total, result) => {
+    Object.entries(result.costBreakdown ?? {}).forEach(([key, value]) => {
+      total[key] = Number(((total[key] ?? 0) + value).toFixed(2));
+    });
+    return total;
+  }, {});
+  return {
+    scenarioId,
+    status: results.some((result) => result.status === "infeasible") ? "fallback" : results.some((result) => result.status === "fallback") ? "fallback" : "optimized",
+    objective: results.reduce((sum, result) => sum + result.objective, 0),
+    totalDistanceKm: Number(results.reduce((sum, result) => sum + result.totalDistanceKm, 0).toFixed(1)),
+    totalDurationMinutes: results.reduce((sum, result) => sum + result.totalDurationMinutes, 0),
+    totalCost: Number(results.reduce((sum, result) => sum + result.totalCost, 0).toFixed(2)),
+    costBreakdown,
+    summary: [
+      `Optimize all clusters: ${results.length} clusters, ${routes.length} routes`,
+      ...results.flatMap((result) => result.summary.slice(0, 1))
+    ],
+    unassignedOrders,
+    warnings,
+    routes
+  };
+}
+
 function buildLocalRouteNotes(orders: Order[], locations: LocationPoint[]) {
   const locationById = new Map(locations.map((location) => [location.id, location]));
   const notes: string[] = [];
@@ -524,6 +643,7 @@ export default function Home() {
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
   const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
   const [editorModal, setEditorModal] = useState<EditorModalState>(null);
+  const [selectedClusterId, setSelectedClusterId] = useState("cluster-1");
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -564,6 +684,19 @@ export default function Home() {
     () => orders.find((order) => order.locationId === selectedLocation?.id && order.serviceDate === planningDate),
     [orders, planningDate, selectedLocation?.id]
   );
+  const clusters = useMemo(() => buildClusterTemplates(locations, orders, vehicles, planningDate), [locations, orders, planningDate, vehicles]);
+  const selectedCluster = useMemo(
+    () => clusters.find((cluster) => cluster.id === selectedClusterId) ?? clusters[0],
+    [clusters, selectedClusterId]
+  );
+  const clusterColorByLocationId = useMemo(() => {
+    const colorByCluster = new Map(clusters.map((cluster) => [cluster.id, cluster.color]));
+    return Object.fromEntries(
+      locations
+        .filter((location) => location.type === "store")
+        .map((location) => [location.id, colorByCluster.get(location.clusterId || "unassigned") ?? clusterColors[0]])
+    );
+  }, [clusters, locations]);
   const editingVehicle = useMemo(
     () => (editorModal?.type === "vehicle" ? vehicles.find((vehicle) => vehicle.id === editorModal.vehicleId) : undefined),
     [editorModal, vehicles]
@@ -650,19 +783,7 @@ export default function Home() {
     setHasCalculatedRoute(false);
   }, []);
 
-  const runOptimization = useCallback(async (options?: { keepPanel?: boolean }) => {
-    if (!depot) return;
-    setIsRunning(true);
-    setOptimizerState((current) => (current === "ready" ? current : "warming"));
-    const payload: OptimizeRequest = {
-      scenarioId: scenarioName || `scenario-${Date.now()}`,
-      depotId: depot.id,
-      locations,
-      vehicles,
-      orders: dailyOrders,
-      costModel
-    };
-
+  const optimizePayload = useCallback(async (payload: OptimizeRequest): Promise<ScenarioResult> => {
     try {
       const response = await fetch(`${API_URL}/api/optimize`, {
         method: "POST",
@@ -672,22 +793,75 @@ export default function Home() {
       if (!response.ok) throw new Error(`Optimizer returned ${response.status}`);
       const optimized = (await response.json()) as ScenarioResult;
       setOptimizerState((current) => (current === "traffic" ? "traffic" : "ready"));
+      return optimized;
+    } catch {
+      setOptimizerState("offline");
+      return buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders, payload.costModel);
+    }
+  }, []);
+
+  const runOptimization = useCallback(async (options?: { keepPanel?: boolean; clusterId?: string }) => {
+    if (!depot) return;
+    setIsRunning(true);
+    setOptimizerState((current) => (current === "ready" ? current : "warming"));
+    const cluster = options?.clusterId ? clusters.find((item) => item.id === options.clusterId) : undefined;
+    const optimizedOrders = cluster ? dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId)) : dailyOrders;
+    const optimizedLocations = cluster
+      ? [depot, ...locations.filter((location) => location.type === "store" && cluster.branchIds.includes(location.id))]
+      : locations;
+    const payload: OptimizeRequest = {
+      scenarioId: cluster ? cluster.name : scenarioName || `scenario-${Date.now()}`,
+      depotId: depot.id,
+      locations: optimizedLocations,
+      vehicles,
+      orders: optimizedOrders,
+      costModel
+    };
+
+    try {
+      const optimized = await optimizePayload(payload);
       setResult(optimized);
       setHasCalculatedRoute(true);
       setComparison((current) => [optimized, ...current.filter((item) => item.scenarioId !== optimized.scenarioId)].slice(0, 4));
-    } catch {
-      setOptimizerState("offline");
-      const fallback = buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders, payload.costModel);
-      setResult(fallback);
-      setHasCalculatedRoute(true);
-      setComparison((current) => [fallback, ...current.filter((item) => item.scenarioId !== fallback.scenarioId)].slice(0, 4));
     } finally {
       setIsRunning(false);
       if (!options?.keepPanel) {
         setActivePanel("run");
       }
     }
-  }, [costModel, dailyOrders, depot, locations, scenarioName, vehicles]);
+  }, [clusters, costModel, dailyOrders, depot, locations, optimizePayload, scenarioName, vehicles]);
+
+  const runAllClusters = useCallback(async () => {
+    if (!depot) return;
+    const activeClusters = clusters.filter((cluster) => dailyOrders.some((order) => cluster.branchIds.includes(order.locationId)));
+    if (!activeClusters.length) return;
+    setIsRunning(true);
+    setOptimizerState((current) => (current === "ready" ? current : "warming"));
+    try {
+      const results: ScenarioResult[] = [];
+      for (const cluster of activeClusters) {
+        const clusterLocations = [depot, ...locations.filter((location) => location.type === "store" && cluster.branchIds.includes(location.id))];
+        const clusterOrders = dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId));
+        results.push(
+          await optimizePayload({
+            scenarioId: cluster.name,
+            depotId: depot.id,
+            locations: clusterLocations,
+            vehicles,
+            orders: clusterOrders,
+            costModel
+          })
+        );
+      }
+      const merged = mergeScenarioResults(`${scenarioName || "scenario"}-clusters`, results);
+      setResult(merged);
+      setHasCalculatedRoute(true);
+      setComparison((current) => [merged, ...current.filter((item) => item.scenarioId !== merged.scenarioId)].slice(0, 4));
+      setActivePanel("run");
+    } finally {
+      setIsRunning(false);
+    }
+  }, [clusters, costModel, dailyOrders, depot, locations, optimizePayload, scenarioName, vehicles]);
 
   const addVehicle = () => {
     if (!depot) return;
@@ -734,10 +908,12 @@ export default function Home() {
     const parsed = parseBranchCsv(csvText);
     if (!parsed.locations.length) return;
     const hasDepot = parsed.locations.some((location) => location.type === "depot");
-    const nextLocations = hasDepot ? parsed.locations : [{ ...parsed.locations[0], type: "depot" as const }, ...parsed.locations.slice(1)];
+    const importedLocations = hasDepot ? parsed.locations : [{ ...parsed.locations[0], type: "depot" as const }, ...parsed.locations.slice(1)];
+    const nextLocations = generateClusterAssignments(importedLocations, parsed.orders, vehicles, planningDate);
     setLocations(nextLocations);
     setOrders(parsed.orders);
     setSelectedLocationId(nextLocations[0].id);
+    setSelectedClusterId(nextLocations.find((location) => location.type === "store")?.clusterId ?? "cluster-1");
     setResult(emptyScenarioResult(scenarioName || "draft"));
     setHasCalculatedRoute(false);
   };
@@ -771,7 +947,8 @@ export default function Home() {
       type: "store",
       lat: (depotLocation?.lat ?? 13.7563) + nextIndex * 0.006,
       lng: (depotLocation?.lng ?? 100.5018) + nextIndex * 0.006,
-      address: ""
+      address: "",
+      clusterId: selectedClusterId
     };
     const nextOrder: Order = {
       id: `ord-${planningDate}-${nextLocation.id}`,
@@ -790,6 +967,15 @@ export default function Home() {
     setSelectedLocationId(nextLocation.id);
     setResult(emptyScenarioResult(scenarioName || "draft"));
     setHasCalculatedRoute(false);
+  };
+
+  const generateClusters = () => {
+    const nextLocations = generateClusterAssignments(locations, dailyOrders, vehicles, planningDate);
+    setLocations(nextLocations);
+    setSelectedClusterId(nextLocations.find((location) => location.type === "store")?.clusterId ?? "cluster-1");
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
+    setActivePanel("clusters");
   };
 
   const updateSelectedLocation = (patch: Partial<LocationPoint>) => {
@@ -1154,6 +1340,77 @@ export default function Home() {
               </Card>
             </TabsContent>
 
+            <TabsContent value="clusters" className="mt-4 space-y-4">
+              <Card className="border-slate-200">
+                <CardHeader>
+                  <CardTitle>Cluster planning</CardTitle>
+                  <CardDescription>จัดกลุ่มสาขาเป็น route template ก่อน optimize รอบส่งจริง</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Button variant="outline" className="w-full" onClick={generateClusters}>
+                    <Boxes className="h-4 w-4" />
+                    Generate clusters
+                  </Button>
+                  <Field label="เลือก Cluster">
+                    <select
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-semibold text-foreground"
+                      value={selectedCluster?.id ?? ""}
+                      onChange={(event) => setSelectedClusterId(event.target.value)}
+                    >
+                      {clusters.map((cluster) => (
+                        <option key={cluster.id} value={cluster.id}>
+                          {cluster.name} · {cluster.branchIds.length} branches
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button onClick={() => selectedCluster && runOptimization({ clusterId: selectedCluster.id })} disabled={isRunning || !selectedCluster}>
+                      <Play className="h-4 w-4" />
+                      Optimize cluster
+                    </Button>
+                    <Button variant="outline" onClick={runAllClusters} disabled={isRunning || !clusters.length}>
+                      <Route className="h-4 w-4" />
+                      Optimize all
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="space-y-2">
+                {clusters.map((cluster) => {
+                  const clusterOrders = dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId));
+                  return (
+                    <button
+                      key={cluster.id}
+                      type="button"
+                      onClick={() => setSelectedClusterId(cluster.id)}
+                      className={`w-full rounded-xl border bg-white p-3 text-left transition-colors hover:bg-secondary ${
+                        selectedCluster?.id === cluster.id ? "border-primary shadow-[0_10px_24px_rgba(15,23,42,0.12)]" : "border-slate-200"
+                      }`}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <p className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                          <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: cluster.color }} />
+                          <span className="truncate">{cluster.name}</span>
+                        </p>
+                        <Badge variant="muted">{clusterOrders.length} orders</Badge>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <RouteMetric label="Branches" value={String(cluster.branchIds.length)} />
+                        <RouteMetric label="Max stops" value={String(cluster.maxStops)} />
+                      </div>
+                      <div className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
+                        {cluster.notes.map((note) => (
+                          <p key={note}>{note}</p>
+                        ))}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </TabsContent>
+
             <TabsContent value="vehicles" className="mt-4 space-y-4">
               <Button variant="outline" className="w-full" onClick={addVehicle}>
                 <Plus className="h-4 w-4" />
@@ -1304,6 +1561,7 @@ export default function Home() {
             orders={dailyOrders}
             routes={result.routes}
             selectedLocationId={selectedLocationId}
+            clusterColorByLocationId={clusterColorByLocationId}
             onLocationSelect={setSelectedLocationId}
             onLocationMove={updateLocation}
           />
@@ -1486,6 +1744,33 @@ export default function Home() {
                   <Field label="ประเภท">
                     <Input value={locationTypeLabel(selectedLocation.type)} readOnly />
                   </Field>
+                  {selectedLocation.type === "store" && (
+                    <>
+                      <Field label="Cluster">
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={selectedLocation.clusterId ?? selectedCluster?.id ?? "cluster-1"}
+                          onChange={(event) => updateSelectedLocation({ clusterId: event.target.value })}
+                        >
+                          {clusters.map((cluster) => (
+                            <option key={cluster.id} value={cluster.id}>
+                              {cluster.name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Manual lock">
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={selectedLocation.clusterLocked ? "locked" : "auto"}
+                          onChange={(event) => updateSelectedLocation({ clusterLocked: event.target.value === "locked" })}
+                        >
+                          <option value="auto">Auto cluster ได้</option>
+                          <option value="locked">Lock cluster นี้</option>
+                        </select>
+                      </Field>
+                    </>
+                  )}
                   <Field label="ชื่อสาขา">
                     <Input value={selectedLocation.name} onChange={(event) => updateSelectedLocation({ name: event.target.value })} />
                   </Field>
@@ -1498,6 +1783,46 @@ export default function Home() {
                   <Field label="Longitude">
                     <Input type="number" value={selectedLocation.lng} onChange={(event) => updateSelectedLocation({ lng: Number(event.target.value) })} />
                   </Field>
+                  {selectedLocation.type === "store" && (
+                    <>
+                      <Field label="รอบส่งประจำ">
+                        <Input
+                          value={selectedLocation.preferredDays?.join(", ") ?? ""}
+                          placeholder="Mon, Wed, Fri"
+                          onChange={(event) =>
+                            updateSelectedLocation({
+                              preferredDays: event.target.value
+                                .split(",")
+                                .map((value) => value.trim())
+                                .filter(Boolean)
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label="Zone hint">
+                        <Input value={selectedLocation.zoneHint ?? ""} onChange={(event) => updateSelectedLocation({ zoneHint: event.target.value })} />
+                      </Field>
+                      <Field label="Vehicle restriction">
+                        <Input
+                          value={selectedLocation.vehicleRestriction ?? ""}
+                          placeholder="รถเล็กเท่านั้น"
+                          onChange={(event) => updateSelectedLocation({ vehicleRestriction: event.target.value })}
+                        />
+                      </Field>
+                      <Field label="Frequency">
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={selectedLocation.serviceFrequency ?? "weekly"}
+                          onChange={(event) => updateSelectedLocation({ serviceFrequency: event.target.value as LocationPoint["serviceFrequency"] })}
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="biweekly">Biweekly</option>
+                          <option value="monthly">Monthly</option>
+                        </select>
+                      </Field>
+                    </>
+                  )}
                 </div>
 
                 {selectedLocation.type === "store" ? (
