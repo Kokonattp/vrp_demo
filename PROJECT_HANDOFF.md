@@ -51,6 +51,8 @@ MAPBOX_TRAFFIC_BUCKETS=07:30,08:30,09:30,11:00,13:00,15:00,17:00,18:30
 MAPBOX_TRAFFIC_TIMEZONE_OFFSET=+07:00
 MAPBOX_MATRIX_BATCH_SIZE=0
 OSRM_BASE_URL=https://router.project-osrm.org
+FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
+STUDIO_SYNC_FILE=/data/studio-sync.json
 ```
 
 Expected health response should include:
@@ -99,7 +101,8 @@ Implemented UI:
   - writes `clusterId` back into the in-browser branch master
   - preserves manually locked branches
   - users can edit `clusterId` and `Lock cluster` after generation
-- The current demo persists branch / Cluster / order edits in browser local storage.
+- The current demo syncs branch / Cluster / order edits and saved route plans through `/api/studio-sync`.
+- Browser local storage remains a fallback cache only. For cross-device updates, the backend must use a persistent `STUDIO_SYNC_FILE`, for example `/data/studio-sync.json` on Hugging Face Spaces with Persistent Storage enabled.
 - The old `ใช้ template ของวันที่เลือก` button was removed.
 - Branch / Vehicle / Order / Cost model edit via modal dialogs.
 - Cluster tab has dashboard cards.
@@ -219,27 +222,32 @@ Backend Hugging Face Space was last pushed with cluster schema:
 ## Deployment Notes
 Frontend changes are pushed to GitHub `main`.
 
-Frontend env for Vercel / Next.js:
+Required frontend env:
 
 ```env
 HF_API_URL=https://nattp-vrp-demo-api.hf.space
-HF_TOKEN=hf_xxx
-NEXT_PUBLIC_MAPBOX_TOKEN=pk_xxx
+HF_TOKEN=hf_your_read_token_if_space_is_private
+NEXT_PUBLIC_API_URL=https://nattp-vrp-demo-api.hf.space
+NEXT_PUBLIC_MAPBOX_TOKEN=pk_your_mapbox_public_token
 ```
 
-Use `HF_API_URL` and `HF_TOKEN` as server-side env only. `NEXT_PUBLIC_MAPBOX_TOKEN` is intentionally public and only enables the UI city traffic tile layer.
-
-Backend env for Hugging Face Space:
+Required backend env:
 
 ```env
+FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
+STUDIO_SYNC_FILE=/data/studio-sync.json
 ROUTING_PROVIDER=mapbox
-MAPBOX_ACCESS_TOKEN=pk_xxx
+MAPBOX_ACCESS_TOKEN=pk_or_sk_your_mapbox_token
 MAPBOX_PROFILE=mapbox/driving-traffic
 MAPBOX_TRAFFIC_BUCKETS=07:30,08:30,09:30,11:00,13:00,15:00,17:00,18:30
 MAPBOX_TRAFFIC_TIMEZONE_OFFSET=+07:00
+MAPBOX_MATRIX_BATCH_SIZE=0
 OSRM_BASE_URL=https://router.project-osrm.org
-FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app,http://localhost:3000
 ```
+
+For `STUDIO_SYNC_FILE=/data/studio-sync.json`, enable Persistent Storage on the backend host. If `/data` is not persistent, saved plans can disappear on restart/redeploy.
+
+Use `HF_API_URL` and `HF_TOKEN` as server-side frontend env only. `NEXT_PUBLIC_MAPBOX_TOKEN` is intentionally public and only enables the UI city traffic tile layer.
 
 Manual stop reorder now calls `/api/route/manual`, which locks the user-edited stop order and reroutes the geometry/distance/duration through the backend routing provider.
 

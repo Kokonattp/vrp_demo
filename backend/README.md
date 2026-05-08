@@ -13,6 +13,39 @@ license: mit
 
 FastAPI backend for the VRP Simulation Studio.
 
+## Environment Variables
+
+Production backend:
+
+```env
+# Allow the deployed frontend to call this API.
+FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
+
+# Shared planner state and saved route plans.
+# On Hugging Face Spaces, enable Persistent Storage and use /data.
+STUDIO_SYNC_FILE=/data/studio-sync.json
+
+# Traffic-aware routing via Mapbox.
+ROUTING_PROVIDER=mapbox
+MAPBOX_ACCESS_TOKEN=pk_or_sk_your_mapbox_token
+MAPBOX_PROFILE=mapbox/driving-traffic
+MAPBOX_TRAFFIC_BUCKETS=07:30,08:30,09:30,11:00,13:00,15:00,17:00,18:30
+MAPBOX_TRAFFIC_TIMEZONE_OFFSET=+07:00
+MAPBOX_MATRIX_BATCH_SIZE=0
+
+# Road-routing fallback.
+OSRM_BASE_URL=https://router.project-osrm.org
+```
+
+Local backend:
+
+```env
+FRONTEND_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+STUDIO_SYNC_FILE=data/studio-sync.json
+ROUTING_PROVIDER=osrm
+OSRM_BASE_URL=https://router.project-osrm.org
+```
+
 ## Routing Modes
 
 Default routing can use OSRM-compatible road routing:

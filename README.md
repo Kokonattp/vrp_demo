@@ -40,6 +40,52 @@ Recommended split:
 - Deploy `backend/` to Render, Railway, Fly.io, or a VPS.
 - Set `NEXT_PUBLIC_API_URL` in Vercel to the public backend URL.
 
+## Environment Variables
+
+### Frontend
+
+Set these in Vercel, or in `frontend/.env.local` for local testing:
+
+```env
+# Preferred when the backend is a Hugging Face Space or any server-side/private API.
+HF_API_URL=https://nattp-vrp-demo-api.hf.space
+
+# Required only when the backend is private and needs an HF token.
+HF_TOKEN=hf_your_read_token
+
+# Optional public backend fallback. Not needed when HF_API_URL is set.
+NEXT_PUBLIC_API_URL=https://nattp-vrp-demo-api.hf.space
+
+# Optional: enables the City traffic layer on the map.
+NEXT_PUBLIC_MAPBOX_TOKEN=pk_your_mapbox_public_token
+```
+
+### Backend
+
+Set these in the backend deployment environment:
+
+```env
+# Required so the frontend can call the backend.
+FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
+
+# Required for shared saved plans across devices.
+# On Hugging Face Spaces, enable Persistent Storage and use /data.
+STUDIO_SYNC_FILE=/data/studio-sync.json
+
+# Recommended routing provider with traffic-aware travel time.
+ROUTING_PROVIDER=mapbox
+MAPBOX_ACCESS_TOKEN=pk_or_sk_your_mapbox_token
+MAPBOX_PROFILE=mapbox/driving-traffic
+MAPBOX_TRAFFIC_BUCKETS=07:30,08:30,09:30,11:00,13:00,15:00,17:00,18:30
+MAPBOX_TRAFFIC_TIMEZONE_OFFSET=+07:00
+MAPBOX_MATRIX_BATCH_SIZE=0
+
+# Fallback road routing when Mapbox is unavailable.
+OSRM_BASE_URL=https://router.project-osrm.org
+```
+
+If you do not enable persistent storage for `STUDIO_SYNC_FILE`, saved planner state can disappear after backend restart or redeploy. `localStorage` remains a browser fallback, but it is not enough for cross-device updates.
+
 ### Vercel
 
 Create a GitHub repo and import it in Vercel with:
