@@ -71,12 +71,18 @@ function buildBranchCsvTemplate(baseDate: string) {
 }
 
 const panels = [
-  { id: "upload", label: "พิกัดสาขา", icon: FileUp },
-  { id: "vehicles", label: "รถจำลอง", icon: Truck },
-  { id: "run", label: "ออเดอร์และคำนวณ", icon: Play }
+  { id: "upload", label: "Branch data", icon: FileUp },
+  { id: "vehicles", label: "Vehicle", icon: Truck },
+  { id: "run", label: "Order / Optimize", icon: Play }
 ] as const;
 
 type OptimizerState = "warming" | "ready" | "traffic" | "offline";
+type EditorModalState =
+  | { type: "branch" }
+  | { type: "vehicle"; vehicleId: string }
+  | { type: "order"; orderId: string }
+  | { type: "cost" }
+  | null;
 
 function statusLabel(value: ScenarioResult["status"] | OptimizerState) {
   const labels = {
@@ -517,6 +523,7 @@ export default function Home() {
   const [showGuide, setShowGuide] = useState(false);
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
   const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
+  const [editorModal, setEditorModal] = useState<EditorModalState>(null);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -556,6 +563,14 @@ export default function Home() {
   const selectedBranchOrder = useMemo(
     () => orders.find((order) => order.locationId === selectedLocation?.id && order.serviceDate === planningDate),
     [orders, planningDate, selectedLocation?.id]
+  );
+  const editingVehicle = useMemo(
+    () => (editorModal?.type === "vehicle" ? vehicles.find((vehicle) => vehicle.id === editorModal.vehicleId) : undefined),
+    [editorModal, vehicles]
+  );
+  const editingOrder = useMemo(
+    () => (editorModal?.type === "order" ? orders.find((order) => order.id === editorModal.orderId) : undefined),
+    [editorModal, orders]
   );
   const driverPayloads = useMemo(
     () =>
@@ -950,7 +965,7 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-normal">สตูดิโอจำลองแผนขนส่ง VRP</h1>
-              <p className="text-xs text-muted-foreground">ใช้แผนที่จริงและพิกัดจริง เพื่อจำลองคำสั่งส่ง รถ และข้อจำกัด</p>
+              <p className="text-xs text-muted-foreground">วางแผนส่งสินค้าโดยใช้พิกัดจริง รถจริง และข้อจำกัดของงาน</p>
             </div>
           </div>
         </div>
@@ -1028,7 +1043,7 @@ export default function Home() {
 
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>จุดส่งและคลัง</CardTitle>
+                  <CardTitle>Branch / Depot</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {locations.map((location) => (
@@ -1049,7 +1064,7 @@ export default function Home() {
             <TabsContent value="upload" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>นำเข้าพิกัดสาขา</CardTitle>
+                  <CardTitle>นำเข้า Branch data</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Field label="วันที่วางแผน">
@@ -1065,7 +1080,7 @@ export default function Home() {
                   </Field>
                   <Button variant="outline" className="w-full" onClick={downloadCsvTemplate}>
                     <Download className="h-4 w-4" />
-                    ดาวน์โหลด template CSV
+                    ดาวน์โหลด CSV template
                   </Button>
                   <Input type="file" accept=".csv,text/csv" onChange={importCsvFile} />
                   <Textarea
@@ -1078,7 +1093,7 @@ export default function Home() {
                   </Button>
                   <Button className="w-full" onClick={importCsv}>
                     <Upload className="h-4 w-4" />
-                    นำเข้าพิกัด
+                    นำเข้า Branch
                   </Button>
                 </CardContent>
               </Card>
@@ -1087,7 +1102,7 @@ export default function Home() {
                 <CardHeader>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <CardTitle>ตัวแปรสาขา</CardTitle>
+                      <CardTitle>ข้อมูล Branch</CardTitle>
                       <CardDescription>ข้อมูลด้านล่างเป็นค่าของวันที่ {planningDate}</CardDescription>
                     </div>
                     <Button variant="outline" size="sm" onClick={addBranch}>
@@ -1115,98 +1130,24 @@ export default function Home() {
                       <p className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
                         คลิก marker บนแผนที่เพื่อเปิด popup และเลือกแก้ไขสาขานั้นได้เช่นกัน
                       </p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <Field label="รหัส">
-                          <Input value={selectedLocation.id} readOnly />
-                        </Field>
-                        <Field label="ประเภท">
-                          <Input value={locationTypeLabel(selectedLocation.type)} readOnly />
-                        </Field>
-                        <Field label="ชื่อ">
-                          <Input value={selectedLocation.name} onChange={(event) => updateSelectedLocation({ name: event.target.value })} />
-                        </Field>
-                        <Field label="ที่อยู่">
-                          <Input value={selectedLocation.address ?? ""} onChange={(event) => updateSelectedLocation({ address: event.target.value })} />
-                        </Field>
-                        <Field label="Latitude">
-                          <Input type="number" value={selectedLocation.lat} onChange={(event) => updateSelectedLocation({ lat: Number(event.target.value) })} />
-                        </Field>
-                        <Field label="Longitude">
-                          <Input type="number" value={selectedLocation.lng} onChange={(event) => updateSelectedLocation({ lng: Number(event.target.value) })} />
-                        </Field>
+                      <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
+                        <div className="mb-2 flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold">{selectedLocation.name}</p>
+                            <p className="text-xs text-muted-foreground">{selectedLocation.address || "ยังไม่ได้ใส่ที่อยู่"}</p>
+                          </div>
+                          <Badge variant={selectedLocation.type === "depot" ? "default" : "muted"}>{locationTypeLabel(selectedLocation.type)}</Badge>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <RouteMetric label="Lat/Lng" value={`${selectedLocation.lat.toFixed(4)}, ${selectedLocation.lng.toFixed(4)}`} />
+                          <RouteMetric label="Service" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.serviceMinutes ?? 15} นาที` : "-"} />
+                          <RouteMetric label="น้ำหนัก" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.weightKg ?? 120} กก.` : "-"} />
+                          <RouteMetric label="CBM" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.cbm ?? 1}` : "-"} />
+                        </div>
                       </div>
-
-                      {selectedLocation.type === "store" ? (
-                        <div className="grid grid-cols-2 gap-3 border-t pt-3">
-                          <Field label="น้ำหนัก กก.">
-                            <Input
-                              type="number"
-                              value={selectedBranchOrder?.weightKg ?? 120}
-                              onChange={(event) => updateSelectedBranchOrder({ weightKg: Number(event.target.value) })}
-                            />
-                          </Field>
-                          <Field label="CBM">
-                            <Input
-                              type="number"
-                              value={selectedBranchOrder?.cbm ?? 1}
-                              onChange={(event) => updateSelectedBranchOrder({ cbm: Number(event.target.value) })}
-                            />
-                          </Field>
-                          <Field label="เวลาบริการ">
-                            <Input
-                              type="number"
-                              value={selectedBranchOrder?.serviceMinutes ?? 15}
-                              onChange={(event) => updateSelectedBranchOrder({ serviceMinutes: Number(event.target.value) })}
-                            />
-                          </Field>
-                          <Field label="โหมดเวลา">
-                            <select
-                              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                              value={selectedBranchOrder?.timeMode ?? "flexible"}
-                              onChange={(event) =>
-                                updateSelectedBranchOrder({
-                                  timeMode: event.target.value === "fixed" ? "fixed" : "flexible",
-                                  timeWindowStart: event.target.value === "fixed" ? selectedBranchOrder?.timeWindowStart || "09:00" : "",
-                                  timeWindowEnd: event.target.value === "fixed" ? selectedBranchOrder?.timeWindowEnd || "10:00" : ""
-                                })
-                              }
-                            >
-                              <option value="flexible">ยืดหยุ่น</option>
-                              <option value="fixed">กำหนดเวลา</option>
-                            </select>
-                          </Field>
-                          <Field label="ความด่วน">
-                            <select
-                              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                              value={selectedBranchOrder?.priority ?? "normal"}
-                              onChange={(event) => updateSelectedBranchOrder({ priority: event.target.value === "high" ? "high" : "normal" })}
-                            >
-                              <option value="normal">ปกติ</option>
-                              <option value="high">ด่วน</option>
-                            </select>
-                          </Field>
-                          <Field label="เริ่มส่ง">
-                            <Input
-                              type="time"
-                              disabled={(selectedBranchOrder?.timeMode ?? "flexible") === "flexible"}
-                              value={selectedBranchOrder?.timeWindowStart ?? ""}
-                              onChange={(event) => updateSelectedBranchOrder({ timeWindowStart: event.target.value })}
-                            />
-                          </Field>
-                          <Field label="สิ้นสุดส่ง">
-                            <Input
-                              type="time"
-                              disabled={(selectedBranchOrder?.timeMode ?? "flexible") === "flexible"}
-                              value={selectedBranchOrder?.timeWindowEnd ?? ""}
-                              onChange={(event) => updateSelectedBranchOrder({ timeWindowEnd: event.target.value })}
-                            />
-                          </Field>
-                        </div>
-                      ) : (
-                        <div className="rounded-md border bg-secondary px-3 py-2 text-xs text-muted-foreground">
-                          คลังใช้เป็นจุดเริ่มต้น/จุดกลับรถ จึงไม่มีน้ำหนัก, CBM หรือ time window ของออเดอร์
-                        </div>
-                      )}
+                      <Button className="w-full" onClick={() => setEditorModal({ type: "branch" })}>
+                        แก้ไขสาขา
+                      </Button>
                     </>
                   )}
                 </CardContent>
@@ -1216,47 +1157,74 @@ export default function Home() {
             <TabsContent value="vehicles" className="mt-4 space-y-4">
               <Button variant="outline" className="w-full" onClick={addVehicle}>
                 <Plus className="h-4 w-4" />
-                เพิ่มรถจำลอง
+                เพิ่ม Vehicle
               </Button>
               {vehicles.map((vehicle, index) => (
-                <VehicleEditor
-                  key={vehicle.id}
-                  vehicle={vehicle}
-                  color={routeColors[index % routeColors.length]}
-                  onChange={(next) => setVehicles((current) => current.map((item) => (item.id === vehicle.id ? next : item)))}
-                />
+                <Card key={vehicle.id} className="border-slate-200">
+                  <CardContent className="space-y-3 pt-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 truncate text-sm font-semibold">
+                          <span className="h-3 w-3 rounded-full" style={{ backgroundColor: routeColors[index % routeColors.length] }} />
+                          {vehicle.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {vehicle.capacityKg} กก. · {vehicle.capacityCbm} CBM · {vehicle.maxStops} จุด
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => setEditorModal({ type: "vehicle", vehicleId: vehicle.id })}>
+                        แก้ไข
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
               ))}
             </TabsContent>
 
             <TabsContent value="run" className="mt-4 space-y-4">
               <Card className="border-slate-200">
                 <CardHeader>
-                  <CardTitle>คำนวณ VRP</CardTitle>
+                  <CardTitle>Optimize route</CardTitle>
                   <CardDescription>{dailyOrders.length} ออเดอร์ของวันที่ {planningDate}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Button variant="outline" className="w-full" onClick={addOrder}>
                     <Plus className="h-4 w-4" />
-                    เพิ่มออเดอร์จำลอง
+                    เพิ่ม Order
                   </Button>
                   <div className="space-y-2">
                     {dailyOrders.map((order) => (
-                      <OrderRow
+                      <button
                         key={order.id}
-                        order={order}
-                        locations={locations}
-                        onChange={(next) => setOrders((current) => current.map((item) => (item.id === order.id ? next : item)))}
-                      />
+                        type="button"
+                        onClick={() => setEditorModal({ type: "order", orderId: order.id })}
+                        className="w-full rounded-md border bg-white p-3 text-left transition-colors hover:bg-secondary"
+                      >
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-sm font-semibold">{order.id}</span>
+                          <Badge variant={order.priority === "high" ? "warning" : "muted"}>{priorityLabel(order.priority)}</Badge>
+                        </div>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {locations.find((location) => location.id === order.locationId)?.name ?? order.locationId} · {order.weightKg} กก. · {order.cbm} CBM · Service {order.serviceMinutes} นาที
+                        </p>
+                      </button>
                     ))}
                   </div>
-                  <CostModelEditor
-                    costModel={costModel}
-                    onChange={(patch) => {
-                      setCostModel((current) => ({ ...current, ...patch }));
-                      setResult(emptyScenarioResult(scenarioName || "draft"));
-                      setHasCalculatedRoute(false);
-                    }}
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setEditorModal({ type: "cost" })}
+                    className="w-full rounded-[14px] border border-slate-200 bg-white p-3 text-left transition-colors hover:bg-secondary"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+                        <Calculator className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold">Cost model</p>
+                        <p className="text-xs text-muted-foreground">ค่ารถ {formatCurrency(costModel.vehicleFixedCost)} · {costModel.costPerKm} บาท/กม.</p>
+                      </div>
+                    </div>
+                  </button>
                   <Button className="w-full" onClick={() => runOptimization()} disabled={isRunning}>
                     {isRunning ? <LoadingSpinner /> : <Play className="h-4 w-4" />}
                     {isRunning ? (optimizerState === "warming" ? "กำลังปลุกตัวคำนวณ" : "กำลังจัดเส้นทาง") : "จัดเส้นทาง"}
@@ -1491,6 +1459,151 @@ export default function Home() {
         </aside>
       </div>
     </main>
+    {editorModal && (
+      <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm">
+        <div className="max-h-[92vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+            <div>
+              <p className="text-base font-bold">
+                {editorModal.type === "branch" && "แก้ไขสาขา"}
+                {editorModal.type === "vehicle" && "แก้ไขรถ"}
+                {editorModal.type === "order" && "แก้ไขออเดอร์"}
+                {editorModal.type === "cost" && "แก้ไข Cost model"}
+              </p>
+              <p className="text-xs text-muted-foreground">ปรับข้อมูลแล้วระบบจะใช้ค่าล่าสุดในการคำนวณครั้งถัดไป</p>
+            </div>
+            <Button variant="ghost" size="icon" onClick={() => setEditorModal(null)} aria-label="ปิด">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="max-h-[calc(92vh-76px)] overflow-y-auto p-5">
+            {editorModal.type === "branch" && selectedLocation && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Branch ID">
+                    <Input value={selectedLocation.id} readOnly />
+                  </Field>
+                  <Field label="ประเภท">
+                    <Input value={locationTypeLabel(selectedLocation.type)} readOnly />
+                  </Field>
+                  <Field label="ชื่อสาขา">
+                    <Input value={selectedLocation.name} onChange={(event) => updateSelectedLocation({ name: event.target.value })} />
+                  </Field>
+                  <Field label="ที่อยู่">
+                    <Input value={selectedLocation.address ?? ""} onChange={(event) => updateSelectedLocation({ address: event.target.value })} />
+                  </Field>
+                  <Field label="Latitude">
+                    <Input type="number" value={selectedLocation.lat} onChange={(event) => updateSelectedLocation({ lat: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="Longitude">
+                    <Input type="number" value={selectedLocation.lng} onChange={(event) => updateSelectedLocation({ lng: Number(event.target.value) })} />
+                  </Field>
+                </div>
+
+                {selectedLocation.type === "store" ? (
+                  <div className="grid grid-cols-2 gap-3 border-t pt-4">
+                    <Field label="น้ำหนัก กก.">
+                      <Input
+                        type="number"
+                        value={selectedBranchOrder?.weightKg ?? 120}
+                        onChange={(event) => updateSelectedBranchOrder({ weightKg: Number(event.target.value) })}
+                      />
+                    </Field>
+                    <Field label="CBM">
+                      <Input
+                        type="number"
+                        value={selectedBranchOrder?.cbm ?? 1}
+                        onChange={(event) => updateSelectedBranchOrder({ cbm: Number(event.target.value) })}
+                      />
+                    </Field>
+                    <Field label="Service time">
+                      <Input
+                        type="number"
+                        value={selectedBranchOrder?.serviceMinutes ?? 15}
+                        onChange={(event) => updateSelectedBranchOrder({ serviceMinutes: Number(event.target.value) })}
+                      />
+                    </Field>
+                    <Field label="Time mode">
+                      <select
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        value={selectedBranchOrder?.timeMode ?? "flexible"}
+                        onChange={(event) =>
+                          updateSelectedBranchOrder({
+                            timeMode: event.target.value === "fixed" ? "fixed" : "flexible",
+                            timeWindowStart: event.target.value === "fixed" ? selectedBranchOrder?.timeWindowStart || "09:00" : "",
+                            timeWindowEnd: event.target.value === "fixed" ? selectedBranchOrder?.timeWindowEnd || "10:00" : ""
+                          })
+                        }
+                      >
+                        <option value="flexible">Flexible</option>
+                        <option value="fixed">Fixed time</option>
+                      </select>
+                    </Field>
+                    <Field label="Priority">
+                      <select
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        value={selectedBranchOrder?.priority ?? "normal"}
+                        onChange={(event) => updateSelectedBranchOrder({ priority: event.target.value === "high" ? "high" : "normal" })}
+                      >
+                        <option value="normal">Normal</option>
+                        <option value="high">High</option>
+                      </select>
+                    </Field>
+                    <Field label="Time window เริ่ม">
+                      <Input
+                        type="time"
+                        disabled={(selectedBranchOrder?.timeMode ?? "flexible") === "flexible"}
+                        value={selectedBranchOrder?.timeWindowStart ?? ""}
+                        onChange={(event) => updateSelectedBranchOrder({ timeWindowStart: event.target.value })}
+                      />
+                    </Field>
+                    <Field label="Time window สิ้นสุด">
+                      <Input
+                        type="time"
+                        disabled={(selectedBranchOrder?.timeMode ?? "flexible") === "flexible"}
+                        value={selectedBranchOrder?.timeWindowEnd ?? ""}
+                        onChange={(event) => updateSelectedBranchOrder({ timeWindowEnd: event.target.value })}
+                      />
+                    </Field>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border bg-secondary p-3 text-sm text-muted-foreground">
+                    คลังเป็นจุดเริ่มต้นและจุดกลับรถ จึงไม่มี demand, service time หรือ time window
+                  </div>
+                )}
+              </div>
+            )}
+
+            {editorModal.type === "vehicle" && editingVehicle && (
+              <VehicleEditor
+                vehicle={editingVehicle}
+                color={routeColors[vehicles.findIndex((vehicle) => vehicle.id === editingVehicle.id) % routeColors.length]}
+                onChange={(next) => setVehicles((current) => current.map((item) => (item.id === editingVehicle.id ? next : item)))}
+              />
+            )}
+
+            {editorModal.type === "order" && editingOrder && (
+              <OrderRow
+                order={editingOrder}
+                locations={locations}
+                onChange={(next) => setOrders((current) => current.map((item) => (item.id === editingOrder.id ? next : item)))}
+              />
+            )}
+
+            {editorModal.type === "cost" && (
+              <CostModelEditor
+                costModel={costModel}
+                onChange={(patch) => {
+                  setCostModel((current) => ({ ...current, ...patch }));
+                  setResult(emptyScenarioResult(scenarioName || "draft"));
+                  setHasCalculatedRoute(false);
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     <WorkOrdersPrint payloads={driverPayloads} assets={driverAssets} />
     </>
   );
