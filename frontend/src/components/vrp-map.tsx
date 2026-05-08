@@ -8,6 +8,18 @@ const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 const fallbackRouteLineColor = "#1B2E4B";
 const depotMarkerColor = "#1B2E4B";
 const storeMarkerColor = "#EF4444";
+const trafficColors = {
+  fast: "#16A34A",
+  slow: "#D97706",
+  jam: "#DC2626"
+};
+const cityTrafficColors = {
+  low: "#22C55E",
+  moderate: "#F59E0B",
+  heavy: "#EF4444",
+  severe: "#7F1D1D"
+};
+const mapboxTrafficToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN?.trim() ?? "";
 
 type VrpMapProps = {
   locations: LocationPoint[];
@@ -41,11 +53,66 @@ function minutesToTime(value: number) {
   return `${hours}:${minutes}`;
 }
 
+function distanceKm(a: Coordinate, b: Coordinate) {
+  const radius = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const h =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * radius * Math.asin(Math.sqrt(h));
+}
+
+function trafficLevelForLeg(previous: RoutePlan["stops"][number], current: RoutePlan["stops"][number]) {
+  const driveMinutes = Math.max(1, current.arrivalMinutes - previous.arrivalMinutes - previous.serviceMinutes);
+  const km = distanceKm(previous, current);
+  const kmh = (km / driveMinutes) * 60;
+  if (current.warnings.some((warning) => /เวลา|Time window|late/i.test(warning)) || kmh < 25) {
+    return { level: "jam" as const, color: trafficColors.jam, label: "ช้ามาก", driveMinutes, kmh };
+  }
+  if (kmh < 38) return { level: "slow" as const, color: trafficColors.slow, label: "หน่วง", driveMinutes, kmh };
+  return { level: "fast" as const, color: trafficColors.fast, label: "คล่องตัว", driveMinutes, kmh };
+}
+
+function buildTrafficFeatures(routes: RoutePlan[]): GeoJSON.FeatureCollection<GeoJSON.LineString> {
+  return {
+    type: "FeatureCollection",
+    features: routes.flatMap((route) =>
+      route.stops.slice(1).map((stop, index) => {
+        const previous = route.stops[index];
+        const impact = trafficLevelForLeg(previous, stop);
+        return {
+          type: "Feature" as const,
+          properties: {
+            color: impact.color,
+            level: impact.level,
+            label: impact.label,
+            routeName: route.vehicleName,
+            driveMinutes: Math.round(impact.driveMinutes),
+            speedKmh: Math.round(impact.kmh)
+          },
+          geometry: {
+            type: "LineString" as const,
+            coordinates: [
+              [previous.lng, previous.lat],
+              [stop.lng, stop.lat]
+            ]
+          }
+        };
+      })
+    )
+  };
+}
+
 export function VrpMap({ locations, orders, routes, selectedLocationId, clusterColorByLocationId = {}, onLocationSelect, onLocationMove }: VrpMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
   const [mapReady, setMapReady] = useState(false);
+  const [showTrafficImpact, setShowTrafficImpact] = useState(false);
+  const [showCityTraffic, setShowCityTraffic] = useState(false);
 
   const bounds = useMemo(() => {
     if (!locations.length) return undefined;
@@ -366,5 +433,235 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     }
   }, [mapReady, routes]);
 
-  return <div ref={containerRef} className="h-full min-h-0 w-full overflow-hidden bg-muted" />;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const sourceId = "city-traffic";
+    const layerId = "city-traffic-line";
+    const removeCityTraffic = () => {
+      if (map.getLayer(layerId)) map.removeLayer(layerId);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+    };
+
+    if (!showCityTraffic || !mapboxTrafficToken) {
+      removeCityTraffic();
+      return;
+    }
+
+    const renderCityTraffic = () => {
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, {
+          type: "vector",
+          tiles: [`https://api.mapbox.com/v4/mapbox.mapbox-traffic-v1/{z}/{x}/{y}.mvt?access_token=${mapboxTrafficToken}`],
+          minzoom: 0,
+          maxzoom: 22
+        });
+      }
+      if (!map.getLayer(layerId)) {
+        const firstRouteLayer = map.getStyle().layers?.find((layer) => layer.id.startsWith("route-casing-"))?.id;
+        map.addLayer(
+          {
+            id: layerId,
+            type: "line",
+            source: sourceId,
+            "source-layer": "traffic",
+            paint: {
+              "line-color": [
+                "match",
+                ["get", "congestion"],
+                "low",
+                cityTrafficColors.low,
+                "moderate",
+                cityTrafficColors.moderate,
+                "heavy",
+                cityTrafficColors.heavy,
+                "severe",
+                cityTrafficColors.severe,
+                "closed",
+                cityTrafficColors.severe,
+                "rgba(100,116,139,0)"
+              ],
+              "line-opacity": 0.78,
+              "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1, 12, 1.8, 15, 3, 18, 5],
+              "line-blur": 0.25
+            },
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            }
+          },
+          firstRouteLayer
+        );
+      }
+    };
+
+    if (map.isStyleLoaded()) {
+      renderCityTraffic();
+    } else {
+      map.once("load", renderCityTraffic);
+    }
+
+    return () => {
+      if (!showCityTraffic) removeCityTraffic();
+    };
+  }, [mapReady, showCityTraffic]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const sourceId = "traffic-impact";
+    const casingLayerId = "traffic-impact-casing";
+    const layerId = "traffic-impact-line";
+    const geojson = buildTrafficFeatures(routes);
+
+    const removeTrafficLayer = () => {
+      if (map.getLayer(layerId)) map.removeLayer(layerId);
+      if (map.getLayer(casingLayerId)) map.removeLayer(casingLayerId);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+    };
+
+    if (!showTrafficImpact || !geojson.features.length) {
+      removeTrafficLayer();
+      return;
+    }
+
+    const renderTrafficLayer = () => {
+      const source = map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
+      if (source) {
+        source.setData(geojson);
+        return;
+      }
+
+      map.addSource(sourceId, { type: "geojson", data: geojson });
+      map.addLayer({
+        id: casingLayerId,
+        type: "line",
+        source: sourceId,
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": 10,
+          "line-opacity": 0.9
+        },
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        }
+      });
+      map.addLayer({
+        id: layerId,
+        type: "line",
+        source: sourceId,
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": 5.5,
+          "line-opacity": 0.95
+        },
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        }
+      });
+    };
+
+    if (map.isStyleLoaded()) {
+      renderTrafficLayer();
+    } else {
+      map.once("load", renderTrafficLayer);
+    }
+
+    return () => {
+      if (!showTrafficImpact) removeTrafficLayer();
+    };
+  }, [mapReady, routes, showTrafficImpact]);
+
+  return (
+    <div className="relative h-full min-h-0 w-full overflow-hidden bg-muted">
+      <div ref={containerRef} className="h-full min-h-0 w-full" />
+      <div className="pointer-events-auto absolute left-5 top-5 z-30 rounded-2xl border border-slate-300 bg-white/95 p-3 shadow-[0_16px_40px_rgba(15,23,42,0.14)] backdrop-blur">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={!routes.length}
+              onClick={() => setShowTrafficImpact((current) => !current)}
+              className={
+                showTrafficImpact
+                  ? "rounded-xl bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                  : "rounded-xl border border-slate-200 bg-[#F8FAFC] px-3 py-2 text-xs font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+              }
+            >
+              Route
+            </button>
+            <button
+              type="button"
+              disabled={!mapboxTrafficToken}
+              onClick={() => setShowCityTraffic((current) => !current)}
+              className={
+                showCityTraffic
+                  ? "rounded-xl bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                  : "rounded-xl border border-slate-200 bg-[#F8FAFC] px-3 py-2 text-xs font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+              }
+              title={mapboxTrafficToken ? "Show Mapbox city traffic" : "Set NEXT_PUBLIC_MAPBOX_TOKEN to enable city traffic"}
+            >
+              City
+            </button>
+          </div>
+          <span className="text-[11px] font-semibold text-slate-500">{showTrafficImpact || showCityTraffic ? "Traffic ON" : "Traffic OFF"}</span>
+        </div>
+        {!mapboxTrafficToken && (
+          <p className="mb-2 max-w-[220px] text-[11px] leading-relaxed text-amber-700">
+            City traffic ต้องตั้ง NEXT_PUBLIC_MAPBOX_TOKEN
+          </p>
+        )}
+        {(showTrafficImpact || showCityTraffic) && (
+          <div className="grid gap-1 text-[11px] text-slate-700">
+            {showTrafficImpact && (
+              <p className="font-bold text-primary">Route traffic</p>
+            )}
+            {showCityTraffic && (
+              <p className="font-bold text-primary">City traffic</p>
+            )}
+            {showTrafficImpact && (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: trafficColors.fast }} />
+                  <span>Route คล่องตัว</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: trafficColors.slow }} />
+                  <span>Route หน่วง</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: trafficColors.jam }} />
+                  <span>Route ช้ามาก / late</span>
+                </div>
+              </>
+            )}
+            {showCityTraffic && (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: cityTrafficColors.low }} />
+                  <span>City low</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: cityTrafficColors.moderate }} />
+                  <span>City moderate</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: cityTrafficColors.heavy }} />
+                  <span>City heavy</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-5 rounded-full" style={{ backgroundColor: cityTrafficColors.severe }} />
+                  <span>City severe</span>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }

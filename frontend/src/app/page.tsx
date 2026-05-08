@@ -33,6 +33,8 @@ import type { ClusterTemplate, Coordinate, CostModel, LocationPoint, OptimizeReq
 const VrpMap = dynamic(() => import("@/components/vrp-map").then((mod) => mod.VrpMap), { ssr: false });
 
 const API_URL = "";
+const STUDIO_STORAGE_KEY = "vrp-simulation-studio-state-v1";
+const SAVED_ROUTE_PLANS_STORAGE_KEY = "vrp-simulation-studio-saved-route-plans-v1";
 
 const defaultCostModel: CostModel = {
   vehicleFixedCost: 1200,
@@ -67,6 +69,15 @@ function buildBranchCsvTemplate(baseDate: string) {
   ].join("\n");
 }
 
+function buildDailyOrdersCsvTemplate(baseDate: string) {
+  return [
+    "orderId,locationId,serviceDate,demandKg,cbm,serviceMinutes,timeMode,timeWindowStart,timeWindowEnd,priority",
+    `ord-${baseDate}-silom,store-silom,${baseDate},180,1.2,18,flexible,,,high`,
+    `ord-${baseDate}-rama9,store-rama9,${baseDate},210,1.3,16,fixed,09:00,09:30,high`,
+    `ord-${baseDate}-ari,store-ari,${baseDate},240,1.6,20,flexible,,,normal`
+  ].join("\n");
+}
+
 const panels = [
   { id: "upload", label: "ข้อมูลสาขา", icon: FileUp },
   { id: "clusters", label: "Cluster", icon: Boxes },
@@ -77,7 +88,9 @@ const panels = [
 const clusterColors = ["#0F766E", "#D97706", "#2563EB", "#7C3AED", "#E11D48", "#475569"];
 
 type OptimizerState = "warming" | "ready" | "traffic" | "offline";
-type OptimizeMode = "cluster-support" | "strict-cluster" | "global";
+type OptimizeMode = "cluster-support" | "strict-cluster";
+type RoutePlanFilter = "all" | "attention" | "late" | "heavy";
+type PrintMode = "workorders" | "route-plan" | null;
 type EditorModalState =
   | { type: "branch" }
   | { type: "vehicle"; vehicleId: string }
@@ -140,6 +153,29 @@ type ClusterCapacityPlan = {
   requiredStops: number;
   status: "fit" | "support" | "over";
   reasons: string[];
+};
+
+type RouteFillSelection = {
+  orders: Order[];
+  branchIds: string[];
+};
+
+type StoredStudioState = {
+  locations: LocationPoint[];
+  vehicles: Vehicle[];
+  orders: Order[];
+  costModel: CostModel;
+  planningDate: string;
+  selectedLocationId: string;
+  selectedClusterId: string;
+};
+
+type SavedRoutePlan = StoredStudioState & {
+  id: string;
+  name: string;
+  savedAt: string;
+  optimizeMode: OptimizeMode;
+  result: ScenarioResult;
 };
 
 function compactRouteStops(stops: RouteStop[]): DisplayRouteStop[] {
@@ -425,7 +461,8 @@ function buildClusterTemplates(
   planningDate: string
 ): ClusterTemplate[] {
   const stores = locations.filter((location) => location.type === "store");
-  const defaultMaxStops = Math.max(3, Math.min(...vehicles.map((vehicle) => vehicle.maxStops).filter(Boolean), 6));
+  const vehicleStops = vehicles.map((vehicle) => vehicle.maxStops).filter(Boolean);
+  const defaultMaxStops = Math.max(4, Math.min(Math.max(...vehicleStops, 6), 8));
   const clusterIds = Array.from(new Set(stores.map((location) => location.clusterId || "unassigned")));
   return clusterIds.map((clusterId, index) => {
     const branchIds = stores.filter((location) => (location.clusterId || "unassigned") === clusterId).map((location) => location.id);
@@ -455,7 +492,8 @@ function buildClusterTemplates(
 function generateClusterAssignments(locations: LocationPoint[], orders: Order[], vehicles: Vehicle[], planningDate: string) {
   const depot = locations.find((location) => location.type === "depot") ?? locations[0];
   const stores = locations.filter((location) => location.type === "store");
-  const maxStops = Math.max(3, Math.min(...vehicles.map((vehicle) => vehicle.maxStops).filter(Boolean), 6));
+  const vehicleStops = vehicles.map((vehicle) => vehicle.maxStops).filter(Boolean);
+  const maxStops = Math.max(4, Math.min(Math.max(...vehicleStops, 6), 8));
   const locationById = new Map(locations.map((location) => [location.id, location]));
   const dailyOrders = orders.filter((order) => order.serviceDate === planningDate);
   const fixedLocationIds = new Set(dailyOrders.filter((order) => order.timeMode === "fixed").map((order) => order.locationId));
@@ -497,6 +535,139 @@ function generateClusterAssignments(locations: LocationPoint[], orders: Order[],
     }
     return { ...location, clusterId: generated.get(location.id) ?? "cluster-1" };
   });
+}
+
+function clusterSequenceNumber(clusterId: string) {
+  const match = clusterId.match(/\d+/);
+  return match ? Number(match[0]) : 1;
+}
+
+function primaryVehicleForCluster(cluster: ClusterTemplate, vehicles: Vehicle[]) {
+  if (!vehicles.length) return undefined;
+  const assignedIndex = (clusterSequenceNumber(cluster.id) - 1) % vehicles.length;
+  return vehicles[assignedIndex];
+}
+
+function vehicleCapacityTotals(vehicles: Vehicle[]) {
+  return vehicles.reduce(
+    (total, vehicle) => ({
+      weight: total.weight + vehicle.capacityKg,
+      cbm: total.cbm + vehicle.capacityCbm,
+      stops: total.stops + vehicle.maxStops
+    }),
+    { weight: 0, cbm: 0, stops: 0 }
+  );
+}
+
+function orderLoadTotals(orders: Order[]) {
+  return {
+    weight: orders.reduce((sum, order) => sum + order.weightKg, 0),
+    cbm: orders.reduce((sum, order) => sum + order.cbm, 0),
+    stops: new Set(orders.map((order) => order.locationId)).size
+  };
+}
+
+function clusterCenter(cluster: ClusterTemplate, locationById: Map<string, LocationPoint>): Coordinate | undefined {
+  const branchLocations = cluster.branchIds.map((id) => locationById.get(id)).filter(Boolean) as LocationPoint[];
+  if (!branchLocations.length) return undefined;
+  return {
+    lat: branchLocations.reduce((sum, location) => sum + location.lat, 0) / branchLocations.length,
+    lng: branchLocations.reduce((sum, location) => sum + location.lng, 0) / branchLocations.length
+  };
+}
+
+function routeCorridorScore(depot: Coordinate, target: Coordinate, point: Coordinate) {
+  const avgLat = ((depot.lat + target.lat) / 2) * (Math.PI / 180);
+  const toKm = (coordinate: Coordinate) => ({
+    x: (coordinate.lng - depot.lng) * Math.cos(avgLat) * 111.32,
+    y: (coordinate.lat - depot.lat) * 110.57
+  });
+  const targetKm = toKm(target);
+  const pointKm = toKm(point);
+  const lengthSquared = targetKm.x * targetKm.x + targetKm.y * targetKm.y;
+  const projection = lengthSquared > 0 ? (pointKm.x * targetKm.x + pointKm.y * targetKm.y) / lengthSquared : 0;
+  const clampedProjection = Math.max(0, Math.min(1, projection));
+  const projected = {
+    x: targetKm.x * clampedProjection,
+    y: targetKm.y * clampedProjection
+  };
+  const perpendicularKm = Math.hypot(pointKm.x - projected.x, pointKm.y - projected.y);
+  const directKm = distanceKm(depot, target);
+  const detourKm = distanceKm(depot, point) + distanceKm(point, target) - directKm;
+  return { projection, perpendicularKm, detourKm, directKm };
+}
+
+function selectRouteFillOrders({
+  cluster,
+  depot,
+  locations,
+  orders,
+  baseOrders,
+  vehicles,
+  blockedOrderIds
+}: {
+  cluster: ClusterTemplate;
+  depot: LocationPoint;
+  locations: LocationPoint[];
+  orders: Order[];
+  baseOrders: Order[];
+  vehicles: Vehicle[];
+  blockedOrderIds?: Set<string>;
+}): RouteFillSelection {
+  const capacity = vehicleCapacityTotals(vehicles);
+  const baseLoad = orderLoadTotals(baseOrders);
+  if (baseLoad.weight >= capacity.weight || baseLoad.cbm >= capacity.cbm || baseLoad.stops >= capacity.stops) {
+    return { orders: [], branchIds: [] };
+  }
+
+  const locationById = new Map(locations.map((location) => [location.id, location]));
+  const target = clusterCenter(cluster, locationById);
+  if (!target) return { orders: [], branchIds: [] };
+
+  const baseBranchIds = new Set(cluster.branchIds);
+  const baseOrderIds = new Set(baseOrders.map((order) => order.id));
+  const blocked = blockedOrderIds ?? new Set<string>();
+  const corridorLimitKm = Math.max(8, Math.min(70, distanceKm(depot, target) * 0.18));
+  const candidates = orders
+    .filter((order) => {
+      const location = locationById.get(order.locationId);
+      return (
+        location &&
+        !baseBranchIds.has(order.locationId) &&
+        !baseOrderIds.has(order.id) &&
+        !blocked.has(order.id) &&
+        order.timeMode === "flexible" &&
+        !location.clusterLocked &&
+        !location.vehicleRestriction
+      );
+    })
+    .map((order) => {
+      const location = locationById.get(order.locationId)!;
+      return { order, location, score: routeCorridorScore(depot, target, location) };
+    })
+    .filter(({ score }) => score.projection >= 0.05 && score.projection <= 1.12 && score.perpendicularKm <= corridorLimitKm)
+    .sort((a, b) => a.score.detourKm - b.score.detourKm || a.score.perpendicularKm - b.score.perpendicularKm);
+
+  const selected: Order[] = [];
+  const selectedBranchIds = new Set<string>();
+  let usedWeight = baseLoad.weight;
+  let usedCbm = baseLoad.cbm;
+  const usedStops = new Set(baseOrders.map((order) => order.locationId));
+
+  for (const { order } of candidates) {
+    const nextStops = new Set(usedStops);
+    nextStops.add(order.locationId);
+    if (usedWeight + order.weightKg > capacity.weight) continue;
+    if (usedCbm + order.cbm > capacity.cbm) continue;
+    if (nextStops.size > capacity.stops) continue;
+    selected.push(order);
+    selectedBranchIds.add(order.locationId);
+    usedStops.add(order.locationId);
+    usedWeight += order.weightKg;
+    usedCbm += order.cbm;
+  }
+
+  return { orders: selected, branchIds: Array.from(selectedBranchIds) };
 }
 
 function mergeScenarioResults(scenarioId: string, results: ScenarioResult[]): ScenarioResult {
@@ -544,10 +715,8 @@ function buildClusterCapacityPlan(
   const totalWeight = clusterOrders.reduce((sum, order) => sum + order.weightKg, 0);
   const totalCbm = clusterOrders.reduce((sum, order) => sum + order.cbm, 0);
   const requiredStops = new Set(clusterOrders.map((order) => order.locationId)).size;
-  const sortedVehicles = [...vehicles].sort(
-    (a, b) => b.capacityKg + b.capacityCbm * 120 + b.maxStops * 80 - (a.capacityKg + a.capacityCbm * 120 + a.maxStops * 80)
-  );
-  const primaryVehicle = sortedVehicles[0];
+  const primaryVehicle = primaryVehicleForCluster(cluster, vehicles);
+  const supportPool = vehicles.filter((vehicle) => vehicle.id !== primaryVehicle?.id);
   const reasons: string[] = [];
   const primaryFits =
     Boolean(primaryVehicle) &&
@@ -574,21 +743,6 @@ function buildClusterCapacityPlan(
   if (totalCbm > primaryVehicle.capacityCbm) reasons.push(`CBM เกิน ${(totalCbm - primaryVehicle.capacityCbm).toFixed(1)}`);
   if (requiredStops > primaryVehicle.maxStops) reasons.push(`จำนวนจุดเกิน ${requiredStops - primaryVehicle.maxStops} จุด`);
 
-  if (mode === "global") {
-    return {
-      cluster,
-      orders: clusterOrders,
-      primaryVehicle,
-      supportVehicles: sortedVehicles.slice(1),
-      selectedVehicles: sortedVehicles,
-      totalWeight,
-      totalCbm,
-      requiredStops,
-      status: primaryFits ? "fit" : "support",
-      reasons: primaryFits ? ["Global optimize พร้อมใช้รถทั้งหมด"] : ["Global optimize อนุญาตให้กระจายงานข้ามรถ"]
-    };
-  }
-
   if (primaryFits || mode === "strict-cluster") {
     return {
       cluster,
@@ -608,7 +762,7 @@ function buildClusterCapacityPlan(
   let cumulativeCbm = primaryVehicle.capacityCbm;
   let cumulativeStops = primaryVehicle.maxStops;
   const supportVehicles: Vehicle[] = [];
-  for (const vehicle of sortedVehicles.slice(1)) {
+  for (const vehicle of supportPool) {
     if (cumulativeWeight >= totalWeight && cumulativeCbm >= totalCbm && cumulativeStops >= requiredStops) break;
     supportVehicles.push(vehicle);
     cumulativeWeight += vehicle.capacityKg;
@@ -630,9 +784,11 @@ function buildClusterCapacityPlan(
   };
 }
 
-function clusterRunSummary(plan: ClusterCapacityPlan, result: ScenarioResult, mode: OptimizeMode) {
-  const modeLabel =
-    mode === "cluster-support" ? "Cluster + support vehicle" : mode === "strict-cluster" ? "Strict 1 vehicle / cluster" : "Global optimize";
+function clusterRunSummary(plan: ClusterCapacityPlan, result: ScenarioResult, mode: OptimizeMode, routeFill: RouteFillSelection) {
+  const modeLabel = mode === "cluster-support" ? "Cluster + route-fill" : "Strict 1 vehicle / cluster";
+  const routeFillSummary = routeFill.orders.length
+    ? [`Route-fill เพิ่ม ${routeFill.branchIds.length} สาขารายทาง / ${routeFill.orders.length} orders เพราะรถยังเหลือ capacity`]
+    : [];
   return [
     `${plan.cluster.name}: ${modeLabel}`,
     plan.status === "fit"
@@ -641,19 +797,60 @@ function clusterRunSummary(plan: ClusterCapacityPlan, result: ScenarioResult, mo
         ? `ใช้รถหลัก ${plan.primaryVehicle?.name ?? "-"} + support ${plan.supportVehicles.length} คัน เพราะ ${plan.reasons.join(", ")}`
         : `ยังมีข้อจำกัด: ${plan.reasons.join(", ")}`,
     `Demand ${Math.round(plan.totalWeight)} กก. · ${plan.totalCbm.toFixed(1)} CBM · ${plan.requiredStops} stops`,
+    ...routeFillSummary,
     ...result.summary
   ];
 }
 
 function optimizeModeLabel(mode: OptimizeMode) {
-  if (mode === "cluster-support") return "Cluster + support vehicle";
-  if (mode === "strict-cluster") return "Strict 1 vehicle / cluster";
-  return "Global optimize";
+  if (mode === "cluster-support") return "Cluster + route-fill";
+  return "Strict 1 vehicle / cluster";
 }
 
 function capacityPercent(value: number, capacity: number | undefined) {
   if (!capacity || capacity <= 0) return 0;
   return Math.min(140, Math.round((value / capacity) * 100));
+}
+
+function routeWarnings(route: RoutePlan) {
+  return [...(route.warnings ?? []), ...route.stops.flatMap((stop) => stop.warnings ?? [])].filter(Boolean);
+}
+
+function routeHasLateWarning(route: RoutePlan) {
+  return routeWarnings(route).some((warning) => /เวลา|Time window|late/i.test(warning));
+}
+
+function routeCapacityRatio(route: RoutePlan, vehicles: Vehicle[]) {
+  const vehicle = vehicles.find((item) => item.id === route.vehicleId);
+  if (!vehicle) return 0;
+  const weightRatio = vehicle.capacityKg ? route.loadKg / vehicle.capacityKg : 0;
+  const cbmRatio = vehicle.capacityCbm ? route.loadCbm / vehicle.capacityCbm : 0;
+  return Math.max(weightRatio, cbmRatio);
+}
+
+function routeNeedsAttention(route: RoutePlan, vehicles: Vehicle[]) {
+  return routeWarnings(route).length > 0 || routeCapacityRatio(route, vehicles) >= 0.9;
+}
+
+function routeMatchesPlanFilter(route: RoutePlan, vehicles: Vehicle[], filter: RoutePlanFilter) {
+  if (filter === "attention") return routeNeedsAttention(route, vehicles);
+  if (filter === "late") return routeHasLateWarning(route);
+  if (filter === "heavy") return routeCapacityRatio(route, vehicles) >= 0.9;
+  return true;
+}
+
+function orderByIdMap(orders: Order[]) {
+  return new Map(orders.map((order) => [order.id, order]));
+}
+
+function stopDemand(stop: RouteStop, ordersById: Map<string, Order>) {
+  const order = stop.orderId ? ordersById.get(stop.orderId) : undefined;
+  return {
+    weightKg: order?.weightKg ?? (stop.orderId ? stop.loadKg : 0),
+    cbm: order?.cbm ?? (stop.orderId ? stop.loadCbm : 0),
+    serviceMinutes: order?.serviceMinutes ?? stop.serviceMinutes,
+    timeWindow: order?.timeMode === "fixed" ? `${order.timeWindowStart}-${order.timeWindowEnd}` : order ? "ยืดหยุ่น" : "-"
+  };
 }
 
 function buildLocalRouteNotes(orders: Order[], locations: LocationPoint[]) {
@@ -682,6 +879,103 @@ function buildLocalRouteNotes(orders: Order[], locations: LocationPoint[]) {
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function loadStoredStudioState(): Partial<StoredStudioState> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STUDIO_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Partial<StoredStudioState>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadSavedRoutePlans(): SavedRoutePlan[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(SAVED_ROUTE_PLANS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as SavedRoutePlan[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedRoutePlans(plans: SavedRoutePlan[]) {
+  window.localStorage.setItem(SAVED_ROUTE_PLANS_STORAGE_KEY, JSON.stringify(plans));
+}
+
+function routeStopGeometry(stops: RouteStop[]): Coordinate[] {
+  return stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }));
+}
+
+function rebuildManualRoute(route: RoutePlan, stops: RouteStop[], orders: Order[]): RoutePlan {
+  const ordersById = orderByIdMap(orders);
+  let elapsed = stops[0]?.arrivalMinutes ?? 8 * 60;
+  let distance = 0;
+  let loadKg = 0;
+  let loadCbm = 0;
+  const nextStops = stops.map((stop, index) => {
+    const previous = stops[index - 1];
+    if (previous) {
+      const legDistance = distanceKm(previous, stop);
+      distance += legDistance;
+      elapsed += (legDistance / 32) * 60;
+    }
+    const order = stop.orderId ? ordersById.get(stop.orderId) : undefined;
+    const warnings: string[] = [];
+    if (order) {
+      if (order.timeMode === "fixed" && elapsed < timeToMinutes(order.timeWindowStart)) {
+        elapsed = timeToMinutes(order.timeWindowStart);
+      }
+      if (order.timeMode === "fixed" && elapsed > timeToMinutes(order.timeWindowEnd)) {
+        warnings.push("เกินช่วงเวลา");
+      }
+      loadKg += order.weightKg;
+      loadCbm += order.cbm;
+    }
+    const nextStop = {
+      ...stop,
+      arrivalMinutes: elapsed,
+      loadKg: order ? order.weightKg : index === stops.length - 1 ? loadKg : 0,
+      loadCbm: order ? order.cbm : index === stops.length - 1 ? loadCbm : 0,
+      serviceMinutes: order?.serviceMinutes ?? stop.serviceMinutes,
+      warnings
+    };
+    elapsed += order?.serviceMinutes ?? stop.serviceMinutes;
+    return nextStop;
+  });
+  const durationMinutes = Math.max(0, Math.round(elapsed - (stops[0]?.arrivalMinutes ?? 8 * 60)));
+  const warnings = nextStops.flatMap((stop) => stop.warnings);
+  return {
+    ...route,
+    stops: nextStops,
+    distanceKm: Number(distance.toFixed(1)),
+    durationMinutes,
+    loadKg: Number(loadKg.toFixed(1)),
+    loadCbm: Number(loadCbm.toFixed(1)),
+    warnings,
+    routeNotes: ["Manual sequence: ลำดับถูกปรับด้วย drag and drop; กด Optimize เพื่อคำนวณเส้นทางถนนจริงใหม่เมื่อ routing พร้อมใช้งาน"],
+    geometry: routeStopGeometry(nextStops)
+  };
+}
+
+function mergeImportedLocationsWithExistingClusters(importedLocations: LocationPoint[], currentLocations: LocationPoint[]) {
+  const currentById = new Map(currentLocations.map((location) => [location.id, location]));
+  return importedLocations.map((location) => {
+    const current = currentById.get(location.id);
+    if (!current || location.type === "depot") return location;
+    return {
+      ...location,
+      clusterId: current.clusterId,
+      clusterLocked: current.clusterLocked,
+      preferredDays: current.preferredDays,
+      preferredTimeWindow: current.preferredTimeWindow,
+      serviceFrequency: current.serviceFrequency,
+      zoneHint: current.zoneHint,
+      vehicleRestriction: current.vehicleRestriction
+    };
+  });
 }
 
 function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Order[] } {
@@ -741,6 +1035,47 @@ function parseBranchCsv(csv: string): { locations: LocationPoint[]; orders: Orde
   return { locations, orders };
 }
 
+function parseDailyOrdersCsv(csv: string, locations: LocationPoint[]): Order[] {
+  const rows = csv
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstRow = rows[0]?.toLowerCase() ?? "";
+  const hasHeader = firstRow.startsWith("orderid,") || firstRow.startsWith("locationid,");
+  const headerStartsWithOrderId = firstRow.startsWith("orderid,");
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const knownLocationIds = new Set(locations.filter((location) => location.type === "store").map((location) => location.id));
+
+  return dataRows.flatMap((line, index) => {
+    const cells = line.split(",").map((cell) => cell.trim());
+    const rowStartsWithLocationId = knownLocationIds.has(cells[0]);
+    const hasOrderId = hasHeader ? headerStartsWithOrderId : !rowStartsWithLocationId;
+    const orderId = hasOrderId ? cells[0] : "";
+    const offset = hasOrderId ? 1 : 0;
+    const [locationId, serviceDate, demandKg, cbm, serviceMinutes, timeModeCell, timeWindowStart, timeWindowEnd, priority] = cells.slice(offset, offset + 9);
+    if (!knownLocationIds.has(locationId)) return [];
+
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(serviceDate ?? "") ? serviceDate : todayDate();
+    const timeMode: Order["timeMode"] =
+      timeModeCell === "fixed" || (timeWindowStart && timeWindowEnd) ? "fixed" : "flexible";
+
+    return [
+      {
+        id: orderId || `ord-${date}-${locationId}-${index + 1}`,
+        locationId,
+        serviceDate: date,
+        timeMode,
+        weightKg: parseNumber(demandKg, 120),
+        cbm: parseNumber(cbm, 1),
+        serviceMinutes: parseNumber(serviceMinutes, 15),
+        timeWindowStart: timeMode === "fixed" ? timeWindowStart || "09:00" : "",
+        timeWindowEnd: timeMode === "fixed" ? timeWindowEnd || "17:00" : "",
+        priority: priority === "high" ? "high" : "normal"
+      }
+    ];
+  });
+}
+
 function emptyScenarioResult(scenarioId: string): ScenarioResult {
   return {
     scenarioId,
@@ -758,16 +1093,19 @@ function emptyScenarioResult(scenarioId: string): ScenarioResult {
 }
 
 export default function Home() {
+  const storedState = loadStoredStudioState();
   const [activePanel, setActivePanel] = useState<(typeof panels)[number]["id"]>("upload");
-  const [locations, setLocations] = useState<LocationPoint[]>(sampleLocations);
-  const [vehicles, setVehicles] = useState<Vehicle[]>(sampleVehicles);
-  const [orders, setOrders] = useState<Order[]>(sampleOrders);
-  const [costModel, setCostModel] = useState<CostModel>(defaultCostModel);
+  const [locations, setLocations] = useState<LocationPoint[]>(() => storedState?.locations ?? sampleLocations);
+  const [vehicles, setVehicles] = useState<Vehicle[]>(() => storedState?.vehicles ?? sampleVehicles);
+  const [orders, setOrders] = useState<Order[]>(() => storedState?.orders ?? sampleOrders);
+  const [costModel, setCostModel] = useState<CostModel>(() => storedState?.costModel ?? defaultCostModel);
   const [result, setResult] = useState<ScenarioResult>(() => emptyScenarioResult("baseline"));
-  const [planningDate, setPlanningDate] = useState(() => todayDate());
+  const [planningDate, setPlanningDate] = useState(() => storedState?.planningDate ?? todayDate());
   const csvTemplate = useMemo(() => buildBranchCsvTemplate(planningDate), [planningDate]);
+  const dailyOrdersCsvTemplate = useMemo(() => buildDailyOrdersCsvTemplate(planningDate), [planningDate]);
   const [csvText, setCsvText] = useState("");
-  const [selectedLocationId, setSelectedLocationId] = useState("depot-bkk");
+  const [dailyOrdersCsvText, setDailyOrdersCsvText] = useState("");
+  const [selectedLocationId, setSelectedLocationId] = useState(() => storedState?.selectedLocationId ?? "depot-bkk");
   const [isRunning, setIsRunning] = useState(false);
   const [optimizerState, setOptimizerState] = useState<OptimizerState>("warming");
   const [scenarioName] = useState("morning-wave");
@@ -775,8 +1113,11 @@ export default function Home() {
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
   const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
   const [editorModal, setEditorModal] = useState<EditorModalState>(null);
-  const [selectedClusterId, setSelectedClusterId] = useState("cluster-1");
+  const [selectedClusterId, setSelectedClusterId] = useState(() => storedState?.selectedClusterId ?? "cluster-1");
   const [optimizeMode, setOptimizeMode] = useState<OptimizeMode>("cluster-support");
+  const [routePlanFilter, setRoutePlanFilter] = useState<RoutePlanFilter>("all");
+  const [printMode, setPrintMode] = useState<PrintMode>(null);
+  const [savedRoutePlans, setSavedRoutePlans] = useState<SavedRoutePlan[]>(() => loadSavedRoutePlans());
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -829,6 +1170,35 @@ export default function Home() {
       ),
     [dailyOrders, locations, planningDate, result.routes, result.scenarioId]
   );
+  const filteredRoutes = useMemo(
+    () => result.routes.filter((route) => routeMatchesPlanFilter(route, vehicles, routePlanFilter)),
+    [result.routes, routePlanFilter, vehicles]
+  );
+  const routePlanFilterOptions = useMemo(
+    () =>
+      [
+        { id: "all" as const, label: "ทั้งหมด", count: result.routes.length },
+        { id: "attention" as const, label: "ต้องดูแล", count: result.routes.filter((route) => routeNeedsAttention(route, vehicles)).length },
+        { id: "late" as const, label: "Late", count: result.routes.filter(routeHasLateWarning).length },
+        { id: "heavy" as const, label: "Capacity สูง", count: result.routes.filter((route) => routeCapacityRatio(route, vehicles) >= 0.9).length }
+      ],
+    [result.routes, vehicles]
+  );
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      STUDIO_STORAGE_KEY,
+      JSON.stringify({
+        locations,
+        vehicles,
+        orders,
+        costModel,
+        planningDate,
+        selectedLocationId,
+        selectedClusterId
+      } satisfies StoredStudioState)
+    );
+  }, [costModel, locations, orders, planningDate, selectedClusterId, selectedLocationId, vehicles]);
 
   useEffect(() => {
     let isActive = true;
@@ -863,6 +1233,12 @@ export default function Home() {
       isActive = false;
     };
   }, [driverPayloads]);
+
+  useEffect(() => {
+    const resetPrintMode = () => setPrintMode(null);
+    window.addEventListener("afterprint", resetPrintMode);
+    return () => window.removeEventListener("afterprint", resetPrintMode);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -917,9 +1293,22 @@ export default function Home() {
     setOptimizerState((current) => (current === "ready" ? current : "warming"));
     const cluster = options?.clusterId ? clusters.find((item) => item.id === options.clusterId) : undefined;
     const plan = cluster ? buildClusterCapacityPlan(cluster, dailyOrders, vehicles, optimizeMode) : undefined;
-    const optimizedOrders = cluster ? dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId)) : dailyOrders;
+    const clusterOrders = cluster ? dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId)) : [];
+    const routeFill =
+      cluster && plan && optimizeMode === "cluster-support"
+        ? selectRouteFillOrders({
+            cluster,
+            depot,
+            locations,
+            orders: dailyOrders,
+            baseOrders: clusterOrders,
+            vehicles: plan.selectedVehicles.length ? plan.selectedVehicles : vehicles
+          })
+        : { orders: [], branchIds: [] };
+    const optimizedOrders = cluster ? [...clusterOrders, ...routeFill.orders] : dailyOrders;
+    const optimizedBranchIds = new Set(optimizedOrders.map((order) => order.locationId));
     const optimizedLocations = cluster
-      ? [depot, ...locations.filter((location) => location.type === "store" && cluster.branchIds.includes(location.id))]
+      ? [depot, ...locations.filter((location) => location.type === "store" && optimizedBranchIds.has(location.id))]
       : locations;
     const payload: OptimizeRequest = {
       scenarioId: cluster ? cluster.name : scenarioName || `scenario-${Date.now()}`,
@@ -935,7 +1324,7 @@ export default function Home() {
       const optimized = plan
         ? {
             ...optimizedRaw,
-            summary: clusterRunSummary(plan, optimizedRaw, optimizeMode),
+            summary: clusterRunSummary(plan, optimizedRaw, optimizeMode, routeFill),
             warnings: plan.status === "over" ? [...optimizedRaw.warnings, ...plan.reasons] : optimizedRaw.warnings
           }
         : optimizedRaw;
@@ -957,21 +1346,41 @@ export default function Home() {
     setOptimizerState((current) => (current === "ready" ? current : "warming"));
     try {
       const results: ScenarioResult[] = [];
+      const assignedOrderIds = new Set<string>();
       for (const cluster of activeClusters) {
-        const plan = buildClusterCapacityPlan(cluster, dailyOrders, vehicles, optimizeMode);
-        const clusterLocations = [depot, ...locations.filter((location) => location.type === "store" && cluster.branchIds.includes(location.id))];
-        const clusterOrders = dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId));
+        const clusterOrders = dailyOrders.filter((order) => cluster.branchIds.includes(order.locationId) && !assignedOrderIds.has(order.id));
+        if (!clusterOrders.length) continue;
+        const plan = buildClusterCapacityPlan(cluster, clusterOrders, vehicles, optimizeMode);
+        const routeFill =
+          optimizeMode === "cluster-support"
+            ? selectRouteFillOrders({
+                cluster,
+                depot,
+                locations,
+                orders: dailyOrders,
+                baseOrders: clusterOrders,
+                vehicles: plan.selectedVehicles.length ? plan.selectedVehicles : vehicles,
+                blockedOrderIds: assignedOrderIds
+              })
+            : { orders: [], branchIds: [] };
+        const optimizedOrders = [...clusterOrders, ...routeFill.orders];
+        const optimizedBranchIds = new Set(optimizedOrders.map((order) => order.locationId));
+        const clusterLocations = [depot, ...locations.filter((location) => location.type === "store" && optimizedBranchIds.has(location.id))];
         const optimizedRaw = await optimizePayload({
             scenarioId: cluster.name,
             depotId: depot.id,
             locations: clusterLocations,
             vehicles: plan.selectedVehicles.length ? plan.selectedVehicles : vehicles,
-            orders: clusterOrders,
+            orders: optimizedOrders,
             costModel
           });
+        const unassignedOrderIds = new Set(optimizedRaw.unassignedOrders);
+        optimizedOrders.forEach((order) => {
+          if (!unassignedOrderIds.has(order.id)) assignedOrderIds.add(order.id);
+        });
         results.push({
           ...optimizedRaw,
-          summary: clusterRunSummary(plan, optimizedRaw, optimizeMode),
+          summary: clusterRunSummary(plan, optimizedRaw, optimizeMode, routeFill),
           warnings: plan.status === "over" ? [...optimizedRaw.warnings, ...plan.reasons] : optimizedRaw.warnings
         });
       }
@@ -983,6 +1392,79 @@ export default function Home() {
       setIsRunning(false);
     }
   }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, scenarioName, vehicles]);
+
+  const saveCurrentRoutePlan = () => {
+    if (!hasCalculatedRoute || !result.routes.length) return;
+    const now = new Date();
+    const savedPlan: SavedRoutePlan = {
+      id: `plan-${now.getTime()}`,
+      name: `${planningDate} · ${result.scenarioId}`,
+      savedAt: now.toISOString(),
+      locations,
+      vehicles,
+      orders,
+      costModel,
+      planningDate,
+      selectedLocationId,
+      selectedClusterId,
+      optimizeMode,
+      result
+    };
+    setSavedRoutePlans((current) => {
+      const next = [savedPlan, ...current].slice(0, 12);
+      persistSavedRoutePlans(next);
+      return next;
+    });
+  };
+
+  const loadRoutePlan = (plan: SavedRoutePlan) => {
+    setLocations(plan.locations);
+    setVehicles(plan.vehicles);
+    setOrders(plan.orders);
+    setCostModel(plan.costModel);
+    setPlanningDate(plan.planningDate);
+    setSelectedLocationId(plan.selectedLocationId);
+    setSelectedClusterId(plan.selectedClusterId);
+    setOptimizeMode(plan.optimizeMode);
+    setResult(plan.result);
+    setHasCalculatedRoute(Boolean(plan.result.routes.length));
+    setActivePanel("run");
+    setRoutePlanFilter("all");
+  };
+
+  const deleteRoutePlan = (planId: string) => {
+    setSavedRoutePlans((current) => {
+      const next = current.filter((plan) => plan.id !== planId);
+      persistSavedRoutePlans(next);
+      return next;
+    });
+  };
+
+  const reorderRouteStop = (routeId: string, draggedOrderId: string, targetOrderId: string) => {
+    if (draggedOrderId === targetOrderId) return;
+    setResult((current) => ({
+      ...current,
+      status: current.status === "optimized" ? "fallback" : current.status,
+      summary: [
+        "Manual sequence: มีการปรับลำดับจุดส่งด้วย drag and drop",
+        ...current.summary.filter((item) => !item.startsWith("Manual sequence:"))
+      ],
+      routes: current.routes.map((route) => {
+        if (route.vehicleId !== routeId) return route;
+        const depotStart = route.stops[0];
+        const depotEnd = route.stops[route.stops.length - 1];
+        const deliveryStops = route.stops.filter((stop) => stop.orderId);
+        const fromIndex = deliveryStops.findIndex((stop) => stop.orderId === draggedOrderId);
+        const toIndex = deliveryStops.findIndex((stop) => stop.orderId === targetOrderId);
+        if (fromIndex < 0 || toIndex < 0) return route;
+        const nextDeliveryStops = [...deliveryStops];
+        const [moved] = nextDeliveryStops.splice(fromIndex, 1);
+        nextDeliveryStops.splice(toIndex, 0, moved);
+        return rebuildManualRoute(route, [depotStart, ...nextDeliveryStops, depotEnd], dailyOrders);
+      })
+    }));
+    setHasCalculatedRoute(true);
+  };
 
   const addVehicle = () => {
     if (!depot) return;
@@ -1030,11 +1512,11 @@ export default function Home() {
     if (!parsed.locations.length) return;
     const hasDepot = parsed.locations.some((location) => location.type === "depot");
     const importedLocations = hasDepot ? parsed.locations : [{ ...parsed.locations[0], type: "depot" as const }, ...parsed.locations.slice(1)];
-    const nextLocations = generateClusterAssignments(importedLocations, parsed.orders, vehicles, planningDate);
+    const nextLocations = mergeImportedLocationsWithExistingClusters(importedLocations, locations);
     setLocations(nextLocations);
     setOrders(parsed.orders);
     setSelectedLocationId(nextLocations[0].id);
-    setSelectedClusterId(nextLocations.find((location) => location.type === "store")?.clusterId ?? "cluster-1");
+    setSelectedClusterId(nextLocations.find((location) => location.type === "store" && location.clusterId)?.clusterId ?? "unassigned");
     setResult(emptyScenarioResult(scenarioName || "draft"));
     setHasCalculatedRoute(false);
   };
@@ -1049,14 +1531,48 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const importDailyOrders = () => {
+    const importedOrders = parseDailyOrdersCsv(dailyOrdersCsvText, locations);
+    if (!importedOrders.length) return;
+    const importedDates = new Set(importedOrders.map((order) => order.serviceDate));
+    setOrders((current) => [...current.filter((order) => !importedDates.has(order.serviceDate)), ...importedOrders]);
+    if (importedDates.size === 1) {
+      setPlanningDate(Array.from(importedDates)[0]);
+    }
+    setResult(emptyScenarioResult(scenarioName || "draft"));
+    setHasCalculatedRoute(false);
+  };
+
+  const downloadDailyOrdersCsvTemplate = () => {
+    const blob = new Blob([dailyOrdersCsvTemplate], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "vrp-daily-orders-template.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const printWorkOrders = () => {
-    window.print();
+    setPrintMode("workorders");
+    window.setTimeout(() => window.print(), 50);
+  };
+
+  const exportRoutePlanPdf = () => {
+    setPrintMode("route-plan");
+    window.setTimeout(() => window.print(), 50);
   };
 
   const importCsvFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     file.text().then((text) => setCsvText(text));
+  };
+
+  const importDailyOrdersCsvFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    file.text().then((text) => setDailyOrdersCsvText(text));
   };
 
   const addBranch = () => {
@@ -1271,6 +1787,30 @@ export default function Home() {
                     นำเข้าสาขา
                   </Button>
 
+                  <div className="rounded-xl border border-slate-300 bg-white p-3 shadow-[0_12px_28px_rgba(15,23,42,0.10)]">
+                    <div className="mb-3">
+                      <p className="text-sm font-semibold text-primary">Import daily orders</p>
+                      <p className="text-xs text-muted-foreground">นำเข้าเฉพาะ Order รายวัน โดยใช้ master สาขาและ Cluster เดิม</p>
+                    </div>
+                    <div className="space-y-3">
+                      <Button variant="outline" className="w-full" onClick={downloadDailyOrdersCsvTemplate}>
+                        <Download className="h-4 w-4" />
+                        ดาวน์โหลด daily orders template
+                      </Button>
+                      <Input type="file" accept=".csv,text/csv" onChange={importDailyOrdersCsvFile} />
+                      <Textarea
+                        value={dailyOrdersCsvText}
+                        onChange={(event) => setDailyOrdersCsvText(event.target.value)}
+                        placeholder="วาง CSV: orderId,locationId,serviceDate,demandKg,cbm,serviceMinutes,timeMode,timeWindowStart,timeWindowEnd,priority"
+                        className="min-h-20"
+                      />
+                      <Button className="w-full" onClick={importDailyOrders}>
+                        <Upload className="h-4 w-4" />
+                        Import daily orders
+                      </Button>
+                    </div>
+                  </div>
+
                   <div className="border-t border-slate-300 pt-3" />
                   {selectedLocation && (
                     <>
@@ -1350,9 +1890,8 @@ export default function Home() {
                       value={optimizeMode}
                       onChange={(event) => setOptimizeMode(event.target.value as OptimizeMode)}
                     >
-                      <option value="cluster-support">Cluster + support vehicle</option>
+                      <option value="cluster-support">Cluster + route-fill</option>
                       <option value="strict-cluster">Strict 1 vehicle / cluster</option>
-                      <option value="global">Global optimize</option>
                     </select>
                   </Field>
                   {selectedClusterPlan && (
@@ -1584,6 +2123,40 @@ export default function Home() {
               </p>
             </div>
           </div>
+          <Card className="mb-4 border-slate-300">
+            <CardHeader className="pb-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Saved plans</CardTitle>
+                  <CardDescription>บันทึกแผน Cluster / route แล้วเปิดกลับมาแก้ต่อได้</CardDescription>
+                </div>
+                <Button size="sm" onClick={saveCurrentRoutePlan} disabled={!hasCalculatedRoute || !result.routes.length}>
+                  Save
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {savedRoutePlans.length === 0 && (
+                <p className="rounded-xl bg-[#F8FAFC] p-3 text-xs text-muted-foreground">ยังไม่มีแผนที่บันทึกไว้ กด Optimize แล้วกด Save เพื่อเก็บแผนนี้</p>
+              )}
+              {savedRoutePlans.slice(0, 4).map((plan) => (
+                <div key={plan.id} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 text-xs">
+                  <button type="button" className="min-w-0 text-left" onClick={() => loadRoutePlan(plan)}>
+                    <span className="block truncate font-semibold text-primary">{plan.name}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {new Date(plan.savedAt).toLocaleString("th-TH")} · {plan.result.routes.length} routes
+                    </span>
+                  </button>
+                  <Button variant="outline" size="sm" onClick={() => loadRoutePlan(plan)}>
+                    เปิด
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => deleteRoutePlan(plan.id)} aria-label="ลบ saved plan">
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
           {selectedClusterPlan && (
             <Card className="mb-4 border-slate-300">
               <CardHeader>
@@ -1600,10 +2173,14 @@ export default function Home() {
             </Card>
           )}
           {hasCalculatedRoute && result.routes.length > 0 && (
-            <div className="mb-4 grid grid-cols-2 gap-2">
+            <div className="mb-4 grid grid-cols-3 gap-2">
               <Button className="w-full" onClick={printWorkOrders}>
                 <Printer className="h-4 w-4" />
                 พิมพ์ใบงาน
+              </Button>
+              <Button variant="outline" className="w-full" onClick={exportRoutePlanPdf} disabled={!filteredRoutes.length}>
+                <Download className="h-4 w-4" />
+                Export PDF
               </Button>
               <Button variant="outline" className="w-full" onClick={() => setActivePanel("run")}>
                 <QrCode className="h-4 w-4" />
@@ -1640,6 +2217,11 @@ export default function Home() {
                     ))}
                   </div>
                 )}
+                {result.status !== "optimized" && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
+                    ตอนนี้เป็น fallback/offline preview: เส้นบนแผนที่เป็นเส้นจำลองจากลำดับจุด ไม่ใช่ geometry ถนนจริงจาก routing provider
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}
@@ -1658,7 +2240,51 @@ export default function Home() {
                 </CardContent>
               </Card>
             )}
-            {hasCalculatedRoute && result.routes.map((route) => {
+            {hasCalculatedRoute && result.routes.length > 0 && (
+              <div className="rounded-xl border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-xs font-bold text-primary">Filter Route Plan</p>
+                  <span className="text-[11px] text-muted-foreground">
+                    แสดง {filteredRoutes.length}/{result.routes.length} routes
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {routePlanFilterOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      aria-pressed={routePlanFilter === option.id}
+                      onClick={() => setRoutePlanFilter(option.id)}
+                      className={
+                        routePlanFilter === option.id
+                          ? "flex h-9 items-center justify-between rounded-xl bg-primary px-3 text-xs font-semibold text-primary-foreground"
+                          : "flex h-9 items-center justify-between rounded-xl border border-slate-200 bg-[#F8FAFC] px-3 text-xs font-semibold text-slate-700 hover:bg-secondary"
+                      }
+                    >
+                      <span>{option.label}</span>
+                      <span
+                        className={
+                          routePlanFilter === option.id
+                            ? "rounded-full bg-white/20 px-2 py-0.5 text-[10px]"
+                            : "rounded-full bg-white px-2 py-0.5 text-[10px] text-muted-foreground"
+                        }
+                      >
+                        {option.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {hasCalculatedRoute && filteredRoutes.length === 0 && (
+              <Card className="border-slate-300">
+                <CardContent className="space-y-2 pt-4">
+                  <p className="text-sm font-semibold">ไม่มี route ใน filter นี้</p>
+                  <p className="text-xs text-muted-foreground">ลองเปลี่ยนกลับเป็น “ทั้งหมด” เพื่อดู Route Plan ทุกคัน</p>
+                </CardContent>
+              </Card>
+            )}
+            {hasCalculatedRoute && filteredRoutes.map((route) => {
               const displayStops = compactRouteStops(route.stops);
               const deliveryStops = displayStops.filter((stop) => stop.orderIds.length > 0);
               const orderCount = route.stops.filter((stop) => stop.orderId).length;
@@ -1690,22 +2316,8 @@ export default function Home() {
                       ))}
                     </div>
                   )}
-                  <div className="space-y-1">
-                    {displayStops.map((stop, index) => (
-                      <div key={`${route.vehicleId}-${stop.locationId}-${index}`} className="flex items-center gap-2 text-xs">
-                        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-secondary text-[10px]">{index + 1}</span>
-                        <span className="min-w-0 flex-1 truncate">
-                          {stop.name}
-                          {stop.deliveryCount > 1 && (
-                            <Badge variant="muted" className="ml-2 align-middle">
-                              {stop.deliveryCount} ออเดอร์
-                            </Badge>
-                          )}
-                        </span>
-                        <span className="text-muted-foreground">{minutesToTime(stop.arrivalMinutes)}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <RouteTimeline route={route} stops={displayStops} />
+                  <ManualStopOrder route={route} orders={dailyOrders} onReorder={reorderRouteStop} />
                   {driverAsset && (
                     <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 rounded-xl border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1945,7 +2557,17 @@ export default function Home() {
         </div>
       </div>
     )}
-    <WorkOrdersPrint payloads={driverPayloads} assets={driverAssets} />
+    {printMode === "workorders" && <WorkOrdersPrint payloads={driverPayloads} assets={driverAssets} />}
+    {printMode === "route-plan" && (
+      <RoutePlanReportPrint
+        routes={filteredRoutes}
+        orders={dailyOrders}
+        planningDate={planningDate}
+        scenarioId={result.scenarioId}
+        filterLabel={routePlanFilterOptions.find((option) => option.id === routePlanFilter)?.label ?? "ทั้งหมด"}
+        result={result}
+      />
+    )}
     </>
   );
 }
@@ -1968,6 +2590,162 @@ function RouteMetric({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl bg-[#F8FAFC] px-3 py-2">
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="font-bold text-primary">{value}</div>
+    </div>
+  );
+}
+
+function RouteTimeline({ route, stops }: { route: RoutePlan; stops: DisplayRouteStop[] }) {
+  if (!stops.length) return null;
+
+  const startMinute = stops[0].arrivalMinutes;
+  const endMinute = Math.max(
+    stops[stops.length - 1].arrivalMinutes + stops[stops.length - 1].serviceMinutes,
+    startMinute + route.durationMinutes,
+    startMinute + 1
+  );
+  const totalMinutes = Math.max(1, endMinute - startMinute);
+  const deliveryCount = stops.filter((stop) => stop.orderIds.length > 0).length;
+
+  return (
+    <div className="rounded-xl border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-bold text-primary">Timeline การวิ่ง</p>
+          <p className="text-[11px] text-muted-foreground">
+            {minutesToTime(startMinute)} - {minutesToTime(endMinute)} · {deliveryCount} จุดส่ง
+          </p>
+        </div>
+        <Badge variant="muted">{route.durationMinutes} นาที</Badge>
+      </div>
+
+      <div className="relative mb-4 h-12 rounded-xl bg-slate-100 px-2">
+        <div className="absolute left-3 right-3 top-1/2 h-1 -translate-y-1/2 rounded-full bg-slate-300" />
+        <div
+          className="absolute top-1/2 h-1 -translate-y-1/2 rounded-full"
+          style={{
+            left: "0.75rem",
+            right: "0.75rem",
+            backgroundColor: route.color
+          }}
+        />
+        {stops.map((stop, index) => {
+          const percent = Math.min(100, Math.max(0, ((stop.arrivalMinutes - startMinute) / totalMinutes) * 100));
+          const isDepot = stop.orderIds.length === 0;
+          return (
+            <div
+              key={`${route.vehicleId}-timeline-dot-${stop.locationId}-${index}`}
+              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+              style={{ left: `${2 + percent * 0.96}%` }}
+              title={`${stop.name} ${minutesToTime(stop.arrivalMinutes)}`}
+            >
+              <span
+                className="grid h-6 w-6 place-items-center rounded-full border-2 border-white text-[10px] font-bold text-white shadow-sm"
+                style={{ backgroundColor: isDepot ? "#1B2E4B" : route.color }}
+              >
+                {isDepot ? "D" : index}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="space-y-2">
+        {stops.map((stop, index) => {
+          const previous = stops[index - 1];
+          const previousEnd = previous ? previous.arrivalMinutes + previous.serviceMinutes : stop.arrivalMinutes;
+          const driveMinutes = Math.max(0, Math.round(stop.arrivalMinutes - previousEnd));
+          const isDepot = stop.orderIds.length === 0;
+          return (
+            <div key={`${route.vehicleId}-timeline-row-${stop.locationId}-${index}`} className="grid grid-cols-[56px_18px_minmax(0,1fr)] gap-2 text-xs">
+              <div className="pt-0.5 text-right font-semibold text-slate-700">{minutesToTime(stop.arrivalMinutes)}</div>
+              <div className="relative flex justify-center">
+                {index < stops.length - 1 && <span className="absolute top-5 h-[calc(100%+0.5rem)] w-px bg-slate-300" />}
+                <span
+                  className="relative z-10 mt-0.5 h-4 w-4 rounded-full border-2 border-white shadow-sm"
+                  style={{ backgroundColor: isDepot ? "#1B2E4B" : route.color }}
+                />
+              </div>
+              <div className="min-w-0">
+                {driveMinutes > 0 && <p className="mb-1 text-[11px] text-muted-foreground">ขับรถประมาณ {driveMinutes} นาที</p>}
+                <div className="rounded-lg bg-[#F8FAFC] px-3 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="min-w-0 truncate font-semibold text-primary">
+                      {stop.name}
+                      {stop.deliveryCount > 1 && (
+                        <Badge variant="muted" className="ml-2 align-middle">
+                          {stop.deliveryCount} ออเดอร์
+                        </Badge>
+                      )}
+                    </p>
+                    {stop.serviceMinutes > 0 && <span className="shrink-0 text-[11px] text-muted-foreground">บริการ {stop.serviceMinutes} นาที</span>}
+                  </div>
+                  {stop.warnings.length > 0 && <p className="mt-1 text-[11px] font-semibold text-amber-700">{stop.warnings.join(", ")}</p>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ManualStopOrder({
+  route,
+  orders,
+  onReorder
+}: {
+  route: RoutePlan;
+  orders: Order[];
+  onReorder: (routeId: string, draggedOrderId: string, targetOrderId: string) => void;
+}) {
+  const ordersById = orderByIdMap(orders);
+  const deliveryStops = route.stops.filter((stop) => stop.orderId);
+  if (deliveryStops.length < 2) return null;
+
+  return (
+    <div className="rounded-xl border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-bold text-primary">Drag to reorder</p>
+          <p className="text-[11px] text-muted-foreground">ลากจุดส่งเพื่อเปลี่ยนลำดับในแผนนี้ แล้ว Save เพื่อเก็บเวอร์ชันล่าสุด</p>
+        </div>
+        <Badge variant="muted">Manual</Badge>
+      </div>
+      <div className="space-y-1.5">
+        {deliveryStops.map((stop, index) => {
+          const demand = stopDemand(stop, ordersById);
+          return (
+            <div
+              key={`${route.vehicleId}-manual-${stop.orderId}`}
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.setData("text/plain", stop.orderId ?? "");
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const draggedOrderId = event.dataTransfer.getData("text/plain");
+                if (draggedOrderId && stop.orderId) onReorder(route.vehicleId, draggedOrderId, stop.orderId);
+              }}
+              className="grid cursor-grab grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border border-slate-200 bg-[#F8FAFC] px-2 py-2 text-xs active:cursor-grabbing"
+            >
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">{index + 1}</span>
+              <span className="min-w-0">
+                <span className="block truncate font-semibold text-primary">{stop.name}</span>
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  {stop.orderId} · {Math.round(demand.weightKg)} กก. · {demand.cbm.toFixed(1)} CBM
+                </span>
+              </span>
+              <span className="text-[11px] font-semibold text-muted-foreground">{minutesToTime(stop.arrivalMinutes)}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2043,6 +2821,180 @@ function CostModelEditor({
         ))}
       </div>
     </div>
+  );
+}
+
+function RoutePlanReportPrint({
+  routes,
+  orders,
+  planningDate,
+  scenarioId,
+  filterLabel,
+  result
+}: {
+  routes: RoutePlan[];
+  orders: Order[];
+  planningDate: string;
+  scenarioId: string;
+  filterLabel: string;
+  result: ScenarioResult;
+}) {
+  if (!routes.length) return null;
+
+  const ordersById = orderByIdMap(orders);
+
+  return (
+    <section className="print-route-report">
+      {routes.map((route) => {
+        const deliveryStops = route.stops.filter((stop) => stop.orderId);
+        let deliverySequence = 0;
+
+        return (
+          <article key={route.vehicleId} className="print-page">
+            <header className="print-header">
+              <div>
+                <p className="print-kicker">VRP Simulation Studio</p>
+                <h1>Route Plan PDF</h1>
+                <p>
+                  วันที่ {planningDate} · แผน {scenarioId} · Filter: {filterLabel}
+                </p>
+              </div>
+              <div className="print-report-badge">
+                <span>Vehicle</span>
+                <strong>{route.vehicleName}</strong>
+              </div>
+            </header>
+
+            <section className="print-summary">
+              <div>
+                <span>จุดส่ง</span>
+                <strong>{deliveryStops.length}</strong>
+              </div>
+              <div>
+                <span>Order</span>
+                <strong>{deliveryStops.length}</strong>
+              </div>
+              <div>
+                <span>ระยะทาง</span>
+                <strong>{route.distanceKm.toFixed(1)} กม.</strong>
+              </div>
+              <div>
+                <span>เวลา</span>
+                <strong>{route.durationMinutes} นาที</strong>
+              </div>
+              <div>
+                <span>น้ำหนักรวม</span>
+                <strong>{Math.round(route.loadKg)} กก.</strong>
+              </div>
+              <div>
+                <span>CBM รวม</span>
+                <strong>{route.loadCbm.toFixed(1)}</strong>
+              </div>
+            </section>
+
+            <section className="print-route-layout">
+              <div>
+                <h2>Route drawing</h2>
+                <PrintRouteDrawing route={route} />
+              </div>
+              <div>
+                <h2>Cost / Warnings</h2>
+                <div className="print-route-notes">
+                  <p>ต้นทุน route: {formatCurrency(route.totalCost)}</p>
+                  <p>ต้นทุนรวม scenario: {formatCurrency(result.totalCost)}</p>
+                  {(route.warnings.length ? route.warnings : ["ไม่มี warning"]).map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <table className="print-table">
+              <thead>
+                <tr>
+                  <th>ลำดับ</th>
+                  <th>เวลา</th>
+                  <th>จุด / สาขา</th>
+                  <th>Order</th>
+                  <th>น้ำหนัก</th>
+                  <th>CBM</th>
+                  <th>Service</th>
+                  <th>Time window / Warning</th>
+                </tr>
+              </thead>
+              <tbody>
+                {route.stops.map((stop, index) => {
+                  const demand = stopDemand(stop, ordersById);
+                  const sequence = stop.orderId ? String(++deliverySequence) : "D";
+                  return (
+                    <tr key={`${route.vehicleId}-${stop.locationId}-${index}`}>
+                      <td>{sequence}</td>
+                      <td>{minutesToTime(stop.arrivalMinutes)}</td>
+                      <td>
+                        <strong>{stop.name}</strong>
+                        <span>{stop.lat.toFixed(5)}, {stop.lng.toFixed(5)}</span>
+                      </td>
+                      <td>{stop.orderId ?? "-"}</td>
+                      <td>{stop.orderId ? `${Math.round(demand.weightKg)} กก.` : "-"}</td>
+                      <td>{stop.orderId ? demand.cbm.toFixed(1) : "-"}</td>
+                      <td>{stop.orderId ? `${demand.serviceMinutes} นาที` : "-"}</td>
+                      <td>
+                        <span>{demand.timeWindow}</span>
+                        {stop.warnings.length > 0 && <strong>{stop.warnings.join(", ")}</strong>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
+function PrintRouteDrawing({ route }: { route: RoutePlan }) {
+  const coordinates = route.geometry.length ? route.geometry : route.stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }));
+  const lats = coordinates.map((point) => point.lat);
+  const lngs = coordinates.map((point) => point.lng);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const width = 620;
+  const height = 260;
+  const padding = 24;
+  const latSpan = Math.max(0.0001, maxLat - minLat);
+  const lngSpan = Math.max(0.0001, maxLng - minLng);
+  const project = (point: Coordinate) => {
+    const x = padding + ((point.lng - minLng) / lngSpan) * (width - padding * 2);
+    const y = padding + ((maxLat - point.lat) / latSpan) * (height - padding * 2);
+    return { x, y };
+  };
+  const routePoints = coordinates.map(project);
+  const polyline = routePoints.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  let deliverySequence = 0;
+
+  return (
+    <svg className="print-route-map" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Route drawing for ${route.vehicleName}`}>
+      <rect x="0" y="0" width={width} height={height} rx="14" fill="#f8fafc" />
+      <path d={`M ${polyline}`} fill="none" stroke="#cbd5e1" strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points={polyline} fill="none" stroke={route.color} strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
+      {route.stops.map((stop, index) => {
+        const point = project(stop);
+        const isDepot = !stop.orderId;
+        const label = isDepot ? "D" : String(++deliverySequence);
+        return (
+          <g key={`${route.vehicleId}-print-dot-${stop.locationId}-${index}`}>
+            <circle cx={point.x} cy={point.y} r={isDepot ? 11 : 9} fill={isDepot ? "#1B2E4B" : route.color} stroke="#ffffff" strokeWidth="3" />
+            <text x={point.x} y={point.y + 3.5} textAnchor="middle" fill="#ffffff" fontSize="9" fontWeight="800">
+              {label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 

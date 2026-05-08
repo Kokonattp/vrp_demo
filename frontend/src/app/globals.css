@@ -194,7 +194,8 @@
   }
 }
 
-.print-workorders {
+.print-workorders,
+.print-route-report {
   display: none;
 }
 
@@ -212,7 +213,8 @@
     display: none !important;
   }
 
-  .print-workorders {
+  .print-workorders,
+  .print-route-report {
     display: block;
     color: #1b2e4b;
     font-family: "Prompt", "Leelawadee UI", "Noto Sans Thai", "Segoe UI", Tahoma, sans-serif;
@@ -294,6 +296,66 @@
     display: block;
     margin-top: 3px;
     font-size: 13px;
+  }
+
+  .print-report-badge {
+    min-width: 150px;
+    border: 1px solid #dbe4ef;
+    border-radius: 10px;
+    padding: 10px 12px;
+    text-align: right;
+  }
+
+  .print-report-badge span {
+    display: block;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .print-report-badge strong {
+    display: block;
+    margin-top: 4px;
+    color: #1b2e4b;
+    font-size: 14px;
+  }
+
+  .print-route-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(160px, 1fr);
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .print-route-layout h2 {
+    margin: 0 0 6px;
+    color: #1b2e4b;
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  .print-route-map {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid #dbe4ef;
+    border-radius: 12px;
+  }
+
+  .print-route-notes {
+    display: grid;
+    gap: 6px;
+    min-height: 100%;
+    border: 1px solid #dbe4ef;
+    border-radius: 12px;
+    padding: 10px;
+    color: #334155;
+    font-size: 11px;
+  }
+
+  .print-route-notes p {
+    margin: 0;
   }
 
   .print-table {

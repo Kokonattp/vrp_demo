@@ -14,26 +14,29 @@ The system is still VRP, but the default planning flow is now **Cluster-first VR
 Default optimization mode:
 
 ```text
-Cluster + support vehicle
+Cluster + route-fill
 ```
 
 Business logic:
 
 ```text
 1 Cluster tries to use 1 Primary vehicle first.
-If Weight / CBM / Stops / Time window does not fit, add only necessary Support vehicle(s).
-Global optimize is kept as a simulation / benchmark mode.
+If the vehicle still has Weight / CBM / Stops capacity and no fixed time / locked cluster / vehicle restriction blocks the stop, add flexible stores along the way to that cluster.
+If the cluster and route-fill demand does not fit, add only necessary Support vehicle(s).
+Each numbered Cluster is assigned to the matching numbered Vehicle as its primary route template.
+Global optimize was removed from the user-facing demo flow.
 ```
 
 Optimization modes in UI:
-- `Cluster + support vehicle`
+- `Cluster + route-fill`
 - `Strict 1 vehicle / cluster`
-- `Global optimize`
 
 Recommended explanation:
 - Pure VRP = optimizer decides everything globally.
 - Cluster-first VRP = planner defines business route templates first, then VRP optimizes inside that frame.
+- Route-fill = if a vehicle is going to Cluster A and still has capacity, the planner may add flexible stores that are on the way before running VRP for that route.
 - For logistics operations with recurring rounds, Cluster-first VRP is the recommended default.
+- In the demo, Vehicle 1 is the primary vehicle for Cluster 1, Vehicle 2 for Cluster 2, and so on.
 
 ## Traffic / Routing
 Backend is configured to support Mapbox traffic-aware routing.
@@ -85,6 +88,18 @@ Implemented UI:
   - Demo Cost Model
   - Route Plan
 - Import CSV and branch editor are merged into one `ข้อมูลสาขา` panel.
+- `Import daily orders` was added for day-by-day demand files:
+  - uses the existing branch / Cluster master
+  - imports only Order rows by `locationId`
+  - does not overwrite branch coordinates or `clusterId`
+  - replaces orders for the imported service date(s)
+- Branch master import does not require `clusterId`.
+- `Generate clusters` is the intended first-run / monthly planning action:
+  - starts from branch coordinates and the selected planning date
+  - writes `clusterId` back into the in-browser branch master
+  - preserves manually locked branches
+  - users can edit `clusterId` and `Lock cluster` after generation
+- The current demo persists branch / Cluster / order edits in browser local storage.
 - The old `ใช้ template ของวันที่เลือก` button was removed.
 - Branch / Vehicle / Order / Cost model edit via modal dialogs.
 - Cluster tab has dashboard cards.
@@ -103,9 +118,18 @@ Implemented UI:
   - `Route Plan`
   - current optimize mode
   - `Cluster Capacity`
+  - route filters: all routes, needs attention, late warnings, high capacity usage
+  - map traffic controls:
+    - `Route` overlays route legs as green / amber / red traffic-impact segments from leg travel time versus distance
+    - `City` overlays Mapbox Traffic v1 vector tiles for city-wide congestion when `NEXT_PUBLIC_MAPBOX_TOKEN` is set
+  - route timeline with arrival time, drive time, service time, and warnings
+  - saved route plans in browser local storage; users can reopen a saved plan with its route result, branches, vehicles, orders, cost model, planning date, and selected Cluster
+  - manual stop ordering via drag and drop inside each route card; this updates the planner route preview and should be followed by re-Optimize when road-routing geometry is required
   - route summary
+  - `Export PDF` for the current Route Plan filter, including route drawing, stop list, per-stop weight / CBM, service time, and warnings
   - print work order
   - QR driver
+- When the app is in fallback/offline mode, route lines are preview lines from stop sequence, not true road geometry. Real road geometry requires the backend routing provider to respond.
 - Card borders and shadows were strengthened across the app for better readability.
 
 Wording preference:
@@ -129,7 +153,7 @@ Frontend seed data in `frontend/src/lib/sample-data.ts` now includes:
 
 ```text
 62 stores / delivery points
-25 clusters
+12 route clusters, usually 3-7 stores per cluster
 12 vehicles
 62 same-day sample orders, generated from the store seed list
 ```
@@ -143,9 +167,9 @@ Covered regions:
 
 Operational interpretation:
 - This is enough for demo usage and Cluster-first route template planning.
-- It is enough when running per cluster, or using `Optimize all` to produce route-template style results.
-- It is not yet a strict real-world fleet assignment model for delivering all 62 stores on the same day with non-reusable vehicles across clusters, because there are 25 clusters but only 12 vehicles.
-- If the product needs to represent real daily operations, add a `vehicle assignment by date / delivery round` layer so one vehicle cannot be reused by multiple clusters in the same round.
+- It is enough when running per cluster, or using `Optimize all` to produce route-template style results across 12 primary vehicle routes.
+- The demo now avoids a global optimize choice so users stay in the intended Cluster-first planning model.
+- If the product needs stricter real daily operations, add a `vehicle assignment by date / delivery round` layer so support vehicles cannot be reused by multiple clusters in the same round.
 - Another practical option is to split service by day, such as Mon / Wed / Fri, so each day only runs the clusters due for that round.
 
 ## Data Model
