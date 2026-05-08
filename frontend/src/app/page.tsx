@@ -186,6 +186,7 @@ type StoredStudioState = {
   planningDate: string;
   selectedLocationId: string;
   selectedClusterId: string;
+  showClusterColors: boolean;
 };
 
 type SavedRoutePlan = StoredStudioState & {
@@ -1170,6 +1171,7 @@ export default function Home() {
   const [scenarioName] = useState("morning-wave");
   const [showGuide, setShowGuide] = useState(false);
   const [hasCalculatedRoute, setHasCalculatedRoute] = useState(false);
+  const [showClusterColors, setShowClusterColors] = useState(() => storedState?.showClusterColors ?? false);
   const [driverAssets, setDriverAssets] = useState<Record<string, { url: string; qr: string }>>({});
   const [editorModal, setEditorModal] = useState<EditorModalState>(null);
   const [selectedClusterId, setSelectedClusterId] = useState(() => storedState?.selectedClusterId ?? "cluster-1");
@@ -1216,13 +1218,14 @@ export default function Home() {
     [clusters, selectedClusterId]
   );
   const clusterColorByLocationId = useMemo(() => {
+    if (!showClusterColors) return {};
     const colorByCluster = new Map(clusters.map((cluster) => [cluster.id, cluster.color]));
     return Object.fromEntries(
       locations
         .filter((location) => location.type === "store")
         .map((location) => [location.id, colorByCluster.get(location.clusterId || "unassigned") ?? clusterColors[0]])
     );
-  }, [clusters, locations]);
+  }, [clusters, locations, showClusterColors]);
   const selectedClusterPlan = useMemo(
     () => (selectedCluster ? buildClusterCapacityPlan(selectedCluster, dailyOrders, vehicles, optimizeMode) : undefined),
     [dailyOrders, optimizeMode, selectedCluster, vehicles]
@@ -1278,10 +1281,11 @@ export default function Home() {
         costModel,
         planningDate,
         selectedLocationId,
-        selectedClusterId
+        selectedClusterId,
+        showClusterColors
       } satisfies StoredStudioState)
     );
-  }, [costModel, locations, orders, planningDate, selectedClusterId, selectedLocationId, vehicles]);
+  }, [costModel, locations, orders, planningDate, selectedClusterId, selectedLocationId, showClusterColors, vehicles]);
 
   useEffect(() => {
     let isActive = true;
@@ -1421,6 +1425,7 @@ export default function Home() {
         : optimizedRaw;
       setResult(optimized);
       setHasCalculatedRoute(true);
+      setShowClusterColors(true);
       setManualRouteSnapshots({});
     } finally {
       setIsRunning(false);
@@ -1479,6 +1484,7 @@ export default function Home() {
       const merged = mergeScenarioResults(`${scenarioName || "scenario"}-clusters`, results);
       setResult(merged);
       setHasCalculatedRoute(true);
+      setShowClusterColors(true);
       setManualRouteSnapshots({});
       setActivePanel("run");
     } finally {
@@ -1500,6 +1506,7 @@ export default function Home() {
       planningDate,
       selectedLocationId,
       selectedClusterId,
+      showClusterColors,
       optimizeMode,
       result
     };
@@ -1521,6 +1528,7 @@ export default function Home() {
     setOptimizeMode(plan.optimizeMode);
     setResult(plan.result);
     setHasCalculatedRoute(Boolean(plan.result.routes.length));
+    setShowClusterColors(true);
     setManualRouteSnapshots({});
     setActivePanel("run");
     setRoutePlanFilter("all");
@@ -1691,6 +1699,7 @@ export default function Home() {
     setSelectedClusterId(nextLocations.find((location) => location.type === "store" && location.clusterId)?.clusterId ?? "unassigned");
     setResult(emptyScenarioResult(scenarioName || "draft"));
     setHasCalculatedRoute(false);
+    setShowClusterColors(false);
   };
 
   const downloadCsvTemplate = () => {
@@ -1785,6 +1794,7 @@ export default function Home() {
     setSelectedClusterId(nextLocations.find((location) => location.type === "store")?.clusterId ?? "cluster-1");
     setResult(emptyScenarioResult(scenarioName || "draft"));
     setHasCalculatedRoute(false);
+    setShowClusterColors(true);
     setActivePanel("clusters");
   };
 
