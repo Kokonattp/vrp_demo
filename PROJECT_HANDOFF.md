@@ -69,10 +69,23 @@ Notes:
 Main workflow:
 
 ```text
-Branch data -> Cluster -> Vehicle -> Order / Optimize
+ข้อมูลสาขา -> Cluster -> Vehicle -> Order / Optimize
 ```
 
 Implemented UI:
+- Page title is now `VRP Simulation Studio`.
+- Branch-facing labels in the main UI were changed to Thai `สาขา / ข้อมูลสาขา`.
+- Use English for technical terms when Thai sounds awkward:
+  - Vehicle
+  - Order
+  - Cluster
+  - Optimize
+  - Capacity
+  - constraints
+  - Demo Cost Model
+  - Route Plan
+- Import CSV and branch editor are merged into one `ข้อมูลสาขา` panel.
+- The old `ใช้ template ของวันที่เลือก` button was removed.
 - Branch / Vehicle / Order / Cost model edit via modal dialogs.
 - Cluster tab has dashboard cards.
 - Cluster tab has `Capacity check`.
@@ -87,16 +100,19 @@ Implemented UI:
 - Map marker colors follow cluster before route optimization.
 - Map has `Cluster legend`.
 - Right panel shows:
-  - `Route plan`
+  - `Route Plan`
   - current optimize mode
-  - `Cluster readiness`
+  - `Cluster Capacity`
   - route summary
   - print work order
   - QR driver
+- Card borders and shadows were strengthened across the app for better readability.
 
 Wording preference:
-- User prefers Thai, but use English/transliterated terms when clearer:
-  - Branch
+- User prefers Thai, but use English for technical/product terms when clearer.
+- Do not force awkward Thai translations, for example use `VRP Simulation Studio` rather than `สตูดิโอจำลองแผนขนส่ง VRP`.
+- Avoid visible `Branch` wording where the user-facing meaning is simply `สาขา`.
+- Keep these terms in English unless there is a very natural Thai equivalent:
   - Cluster
   - Vehicle
   - Order
@@ -105,6 +121,32 @@ Wording preference:
   - Time window
   - Support vehicle
   - Primary vehicle
+  - constraints
+  - Demo Cost Model
+
+## Current Demo Data
+Frontend seed data in `frontend/src/lib/sample-data.ts` now includes:
+
+```text
+62 stores / delivery points
+25 clusters
+12 vehicles
+62 same-day sample orders, generated from the store seed list
+```
+
+Covered regions:
+- Bangkok
+- Metropolitan area
+- Central region
+- Eastern region
+- Northeastern region
+
+Operational interpretation:
+- This is enough for demo usage and Cluster-first route template planning.
+- It is enough when running per cluster, or using `Optimize all` to produce route-template style results.
+- It is not yet a strict real-world fleet assignment model for delivering all 62 stores on the same day with non-reusable vehicles across clusters, because there are 25 clusters but only 12 vehicles.
+- If the product needs to represent real daily operations, add a `vehicle assignment by date / delivery round` layer so one vehicle cannot be reused by multiple clusters in the same round.
+- Another practical option is to split service by day, such as Mon / Wed / Fri, so each day only runs the clusters due for that round.
 
 ## Data Model
 Frontend `LocationPoint` supports:
@@ -139,6 +181,9 @@ vehicleRestriction: str | None = None
 - `09e381a refactor: simplify cluster-first workflow page`
 - `a5ea18b feat: prefer primary vehicle per cluster`
 - `a571a7a style: polish cluster-first VRP dashboard`
+- `8608445 style: merge branch import and editor panel`
+- `5ca1fc2 feat: expand sample branch network`
+- `b3cf6ec copy: clarify vrp interface wording`
 
 Backend Hugging Face Space was last pushed with cluster schema:
 
@@ -181,4 +226,3 @@ D:\VRP\artifacts\vrp-vs-cluster-first-vrp.png
 - `artifacts/` contains generated images and is intentionally untracked unless the user asks to commit it.
 - User often wants commit/push immediately when implementation is done.
 - Be careful not to revert unrelated changes.
-
