@@ -122,6 +122,32 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     return lngLatBounds;
   }, [locations]);
 
+  const markerCoordinateByLocationId = useMemo(() => {
+    const buckets = new Map<string, LocationPoint[]>();
+    locations.forEach((location) => {
+      const key = `${location.lat.toFixed(3)}:${location.lng.toFixed(3)}`;
+      buckets.set(key, [...(buckets.get(key) ?? []), location]);
+    });
+
+    const coordinates = new Map<string, Coordinate>();
+    buckets.forEach((bucket) => {
+      if (bucket.length === 1) {
+        coordinates.set(bucket[0].id, { lat: bucket[0].lat, lng: bucket[0].lng });
+        return;
+      }
+
+      bucket.forEach((location, index) => {
+        const angle = (index / bucket.length) * Math.PI * 2;
+        const radius = 0.00028 + Math.floor(index / 8) * 0.00012;
+        coordinates.set(location.id, {
+          lat: location.lat + Math.sin(angle) * radius,
+          lng: location.lng + Math.cos(angle) * radius
+        });
+      });
+    });
+    return coordinates;
+  }, [locations]);
+
   const routeStopByLocationId = useMemo(() => {
     const stopsByLocation = new Map<
       string,
@@ -252,6 +278,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     locations.forEach((location) => {
       const routeStop = routeStopByLocationId.get(location.id);
       const orderSummary = orderSummaryByLocationId.get(location.id);
+      const markerCoordinate = markerCoordinateByLocationId.get(location.id) ?? location;
       const markerLabel = location.type === "depot" ? "D" : routeStop ? String(routeStop.sequence) : "";
       const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? clusterColorByLocationId[location.id] ?? storeMarkerColor;
       const locationType = location.type === "depot" ? "คลัง / จุดพักรถ" : "สาขา";
@@ -311,6 +338,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         routeStop ? `</section>` : "",
         `</div>`
       ].join("");
+      const popup = new maplibregl.Popup({ offset: 18, closeButton: true }).setHTML(popupHtml);
       const markerElement = document.createElement("div");
       markerElement.className = ["vrp-marker", location.type === "depot" ? "vrp-marker--depot" : "vrp-marker--store", selectedLocationId === location.id ? "vrp-marker--selected" : ""]
         .filter(Boolean)
@@ -322,25 +350,34 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         "aria-label",
         `${location.name} ${location.type === "depot" ? "depot" : `stop ${markerLabel}`}`
       );
-      markerElement.onclick = () => onLocationSelect?.(location.id);
 
       const existing = markerRef.current[location.id];
       if (existing) {
-        existing.setLngLat([location.lng, location.lat]);
-        existing.setPopup(new maplibregl.Popup().setHTML(popupHtml));
+        existing.setLngLat([markerCoordinate.lng, markerCoordinate.lat]);
+        existing.setPopup(popup);
         existing.getElement().className = markerElement.className;
         existing.getElement().style.backgroundColor = markerColor;
         existing.getElement().style.setProperty("--marker-color", markerColor);
         existing.getElement().textContent = markerElement.textContent;
         existing.getElement().setAttribute("aria-label", markerElement.getAttribute("aria-label") ?? location.name);
-        existing.getElement().onclick = () => onLocationSelect?.(location.id);
+        existing.getElement().onclick = (event) => {
+          event.stopPropagation();
+          onLocationSelect?.(location.id);
+          popup.setLngLat(existing.getLngLat()).addTo(map);
+        };
         return;
       }
 
       const marker = new maplibregl.Marker({ element: markerElement, draggable: true, anchor: "center" })
-        .setLngLat([location.lng, location.lat])
-        .setPopup(new maplibregl.Popup().setHTML(popupHtml))
+        .setLngLat([markerCoordinate.lng, markerCoordinate.lat])
+        .setPopup(popup)
         .addTo(map);
+
+      markerElement.onclick = (event) => {
+        event.stopPropagation();
+        onLocationSelect?.(location.id);
+        popup.setLngLat(marker.getLngLat()).addTo(map);
+      };
 
       marker.on("dragend", () => {
         const lngLat = marker.getLngLat();
@@ -349,19 +386,20 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
 
       markerRef.current[location.id] = marker;
     });
-  }, [clusterColorByLocationId, locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+  }, [clusterColorByLocationId, locations, mapReady, markerCoordinateByLocationId, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady || !selectedLocationId) return;
     const selected = locations.find((location) => location.id === selectedLocationId);
-    if (!selected || selected.type === "depot") return;
+    if (!selected) return;
+    const marker = markerRef.current[selected.id];
+    const target = marker?.getLngLat() ?? selected;
     map.easeTo({
-      center: [selected.lng, selected.lat],
-      zoom: Math.max(map.getZoom(), 10.5),
+      center: [target.lng, target.lat],
+      zoom: Math.max(map.getZoom(), 11.5),
       duration: 650
     });
-    const marker = markerRef.current[selected.id];
     const popup = marker?.getPopup();
     if (marker && popup) {
       popup.setLngLat(marker.getLngLat()).addTo(map);

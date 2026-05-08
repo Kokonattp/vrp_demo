@@ -1197,6 +1197,19 @@ export default function Home() {
     () => orders.find((order) => order.locationId === selectedLocation?.id && order.serviceDate === planningDate),
     [orders, planningDate, selectedLocation?.id]
   );
+  const selectedBranchDailyOrders = useMemo(
+    () => dailyOrders.filter((order) => order.locationId === selectedLocation?.id),
+    [dailyOrders, selectedLocation?.id]
+  );
+  const selectedBranchDemand = useMemo(
+    () => ({
+      count: selectedBranchDailyOrders.length,
+      weightKg: selectedBranchDailyOrders.reduce((sum, order) => sum + order.weightKg, 0),
+      cbm: selectedBranchDailyOrders.reduce((sum, order) => sum + order.cbm, 0),
+      serviceMinutes: selectedBranchDailyOrders.reduce((sum, order) => sum + order.serviceMinutes, 0)
+    }),
+    [selectedBranchDailyOrders]
+  );
   const clusters = useMemo(() => buildClusterTemplates(locations, orders, vehicles, planningDate), [locations, orders, planningDate, vehicles]);
   const selectedCluster = useMemo(
     () => clusters.find((cluster) => cluster.id === selectedClusterId) ?? clusters[0],
@@ -1964,18 +1977,24 @@ export default function Home() {
                     นำเข้าสาขา
                   </Button>
 
-                  <div className="rounded-xl border border-slate-300 bg-white p-3 shadow-[0_12px_28px_rgba(15,23,42,0.10)]">
-                    <div className="mb-3 flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-primary">Import daily orders</p>
-                        <p className="text-xs text-muted-foreground">นำเข้าเฉพาะ Order รายวัน โดยใช้ master สาขาและ Cluster เดิม</p>
-                      </div>
-                      <Button variant="ghost" size="sm" onClick={() => toggleHiddenSection("daily-orders")}>
-                        {hiddenSections["daily-orders"] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
-                        {hiddenSections["daily-orders"] ? "แสดง" : "ซ่อน"}
-                      </Button>
+                </CardContent>}
+              </Card>
+
+              <Card className="border-slate-300">
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>Import daily orders</CardTitle>
+                      <CardDescription>นำเข้าเฉพาะ Order รายวัน โดยใช้ master สาขาและ Cluster เดิม</CardDescription>
                     </div>
-                    {!hiddenSections["daily-orders"] && <div className="space-y-3">
+                    <Button variant="ghost" size="sm" onClick={() => toggleHiddenSection("daily-orders")}>
+                      {hiddenSections["daily-orders"] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                      {hiddenSections["daily-orders"] ? "แสดง" : "ซ่อน"}
+                    </Button>
+                  </div>
+                </CardHeader>
+                {!hiddenSections["daily-orders"] && (
+                  <CardContent className="space-y-3">
                       <Button variant="outline" className="w-full" onClick={downloadDailyOrdersCsvTemplate}>
                         <Download className="h-4 w-4" />
                         ดาวน์โหลด daily orders template
@@ -2002,12 +2021,25 @@ export default function Home() {
                         <Upload className="h-4 w-4" />
                         Import daily orders
                       </Button>
-                    </div>}
-                  </div>
-
-                  <div className="border-t border-slate-300 pt-3" />
-                  {selectedLocation && (
-                    <>
+                  </CardContent>
+                )}
+              </Card>
+              {selectedLocation && (
+                <Card className="border-slate-300">
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <CardTitle>แก้ไขสาขานี้</CardTitle>
+                        <CardDescription>เลือกสาขา/จุดพัก แล้วตรวจ Demand จาก daily orders ของวันที่วางแผน</CardDescription>
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => toggleHiddenSection("selected-branch")}>
+                        {hiddenSections["selected-branch"] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                        {hiddenSections["selected-branch"] ? "แสดง" : "ซ่อน"}
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  {!hiddenSections["selected-branch"] && (
+                    <CardContent className="space-y-3">
                       <Field label="เลือกสาขาที่ต้องการแก้ไข">
                         <select
                           className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-semibold text-foreground"
@@ -2040,17 +2072,26 @@ export default function Home() {
                         <div className="grid grid-cols-2 gap-2 p-3 text-xs">
                           <RouteMetric label="พิกัด" value={`${selectedLocation.lat.toFixed(4)}, ${selectedLocation.lng.toFixed(4)}`} />
                           <RouteMetric label="Cluster" value={selectedLocation.clusterId ?? "-"} />
-                          <RouteMetric label="Service" value={selectedLocation.type === "store" ? `${selectedBranchOrder?.serviceMinutes ?? 15} นาที` : "จุดพัก/คลัง"} />
-                          <RouteMetric label="Demand" value={selectedLocation.type === "store" ? `${Math.round(selectedBranchOrder?.weightKg ?? 120)} กก. · ${selectedBranchOrder?.cbm ?? 1} CBM` : "-"} />
+                          <RouteMetric label="Service" value={selectedLocation.type === "store" ? `${selectedBranchDemand.serviceMinutes || selectedBranchOrder?.serviceMinutes || 0} นาที` : "จุดพัก/คลัง"} />
+                          <RouteMetric
+                            label="Demand"
+                            value={
+                              selectedLocation.type === "store" && selectedBranchDemand.count > 0
+                                ? `${Math.round(selectedBranchDemand.weightKg)} กก. · ${selectedBranchDemand.cbm.toFixed(1)} CBM`
+                                : selectedLocation.type === "store"
+                                  ? "ไม่มี Order วันนี้"
+                                  : "-"
+                            }
+                          />
                         </div>
                       </div>
                       <Button className="w-full" onClick={() => setEditorModal({ type: "branch" })}>
                         แก้ไขสาขา
                       </Button>
-                    </>
+                    </CardContent>
                   )}
-                </CardContent>}
-              </Card>
+                </Card>
+              )}
             </TabsContent>
 
             <TabsContent value="clusters" className="mt-4 space-y-4">
