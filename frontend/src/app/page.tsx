@@ -230,7 +230,7 @@ function buildScenarioSummary(
   const totalDuration = routes.reduce((sum, route) => sum + route.durationMinutes, 0);
   const summary = [
     `ใช้รถ ${routes.length} คัน จัดส่ง ${orderCount} ออเดอร์ ระยะทางรวม ${totalDistance.toFixed(1)} กม. ใช้เวลารวม ${totalDuration} นาที`,
-    `ต้นทุนจำลองรวม ${formatCurrency(costBreakdown.totalCost)} จากค่ารถ ระยะทาง เวลา OT และ penalty`
+    `Demo cost รวม ${formatCurrency(costBreakdown.totalCost)} จากค่ารถ ระยะทาง เวลา OT และ penalty`
   ];
   if (status === "fallback") summary.push("ผลลัพธ์นี้เป็น fallback ในเครื่อง ใช้สำหรับทดลองเมื่อ backend/routing API ยังติดต่อไม่ได้");
   if (unassignedOrders.length) summary.push(`มีออเดอร์ยังไม่ถูกจัด ${unassignedOrders.length} รายการ`);
@@ -992,7 +992,7 @@ export default function Home() {
       ...current,
       {
         id: `veh-${current.length + 1}`,
-        name: `รถจำลอง ${current.length + 1}`,
+        name: `Demo Vehicle ${current.length + 1}`,
         capacityKg: 1000,
         capacityCbm: 10,
         maxStops: 6,
@@ -1141,7 +1141,7 @@ export default function Home() {
                 <Badge variant="success">คู่มือเร็ว</Badge>
                 <h2 className="mt-3 text-xl font-semibold">VRP Simulation Studio ทำงานยังไง?</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  ใช้แผนที่และพิกัดจริง แต่รถ ออเดอร์ น้ำหนัก CBM และข้อจำกัดเป็นข้อมูลจำลองสำหรับลองวางแผน
+                  ใช้แผนที่และพิกัดจริง ส่วนรถ Order น้ำหนัก CBM และข้อจำกัดเป็น demo data สำหรับลองวางแผน
                 </p>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setShowGuide(false)} aria-label="ปิดคู่มือ">
@@ -1151,8 +1151,8 @@ export default function Home() {
             <div className="space-y-3 p-5">
               {[
                 ["1", "เตรียมข้อมูลสาขา", "นำเข้า CSV หรือแก้ข้อมูลสาขา/คลัง พิกัด ที่อยู่ demand และ service time"],
-                ["2", "จัด Cluster", "Generate cluster เป็น route template แล้ว lock หรือย้าย branch ได้ตามรอบส่ง"],
-                ["3", "ตั้ง Vehicle / Order", "กำหนดรถ ความจุ max stops และออเดอร์ของวันที่วางแผน"],
+                ["2", "จัด Cluster", "Generate route template แล้ว lock หรือย้ายสาขาได้ตามรอบส่ง"],
+                ["3", "ตั้ง Vehicle / Order", "กำหนดรถ capacity, max stops และ Order ของวันที่วางแผน"],
                 ["4", "Optimize", "คำนวณเฉพาะ cluster หรือ optimize all clusters เพื่อออกใบงานและ QR คนรถ"]
               ].map(([number, title, detail]) => (
                 <div key={number} className="flex gap-3 rounded-[14px] border border-border bg-[#F8FAFC] p-3">
@@ -1184,8 +1184,8 @@ export default function Home() {
               <Route className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-normal">สตูดิโอจำลองแผนขนส่ง VRP</h1>
-              <p className="text-xs text-muted-foreground">วางแผนส่งสินค้าโดยใช้พิกัดจริง รถจริง และข้อจำกัดของงาน</p>
+              <h1 className="text-lg font-bold tracking-normal">VRP Simulation Studio</h1>
+              <p className="text-xs text-muted-foreground">วางแผนส่งสินค้าโดยใช้พิกัดจริง, Vehicle, Order และ constraints ของงาน</p>
             </div>
           </div>
         </div>
@@ -1204,7 +1204,7 @@ export default function Home() {
             <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_14px_34px_rgba(15,23,42,0.14)]">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">Workflow 4 ขั้นตอน</p>
+                  <p className="text-sm font-semibold">VRP Workflow</p>
                   <p className="text-xs leading-relaxed text-muted-foreground">เตรียมข้อมูลสาขา, จัด Cluster, ตั้ง Vehicle แล้ว Optimize ตามรอบส่ง</p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => setShowGuide(true)}>
@@ -1479,8 +1479,8 @@ export default function Home() {
             <TabsContent value="run" className="mt-4 space-y-4">
               <Card className="border-slate-300">
                 <CardHeader>
-                  <CardTitle>Optimize route</CardTitle>
-                  <CardDescription>{dailyOrders.length} ออเดอร์ของวันที่ {planningDate}</CardDescription>
+                  <CardTitle>Optimize Route</CardTitle>
+                  <CardDescription>{dailyOrders.length} Orders ของวันที่ {planningDate}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Button variant="outline" className="w-full" onClick={addOrder}>
@@ -1567,7 +1567,7 @@ export default function Home() {
           <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_16px_40px_rgba(15,23,42,0.14)]">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <h2 className="text-base font-semibold">Route plan</h2>
+                <h2 className="text-base font-semibold">Route Plan</h2>
                 <p className="truncate text-xs text-muted-foreground">{selectedCluster?.name ?? "All clusters"} · {optimizeModeLabel(optimizeMode)}</p>
               </div>
               <Badge variant={result.status === "optimized" ? "success" : "warning"}>
@@ -1580,14 +1580,14 @@ export default function Home() {
                   ? "กำลังคำนวณเส้นถนนจริง..."
                   : hasCalculatedRoute
                     ? `${result.totalDistanceKm.toFixed(1)} กม., ${result.totalDurationMinutes} นาที · ${formatCurrency(result.totalCost)}`
-                    : "เลือก Cluster แล้วตรวจ Capacity ก่อน Optimize"}
+                    : "เลือก Cluster แล้วตรวจ capacity ก่อน Optimize"}
               </p>
             </div>
           </div>
           {selectedClusterPlan && (
             <Card className="mb-4 border-slate-300">
               <CardHeader>
-                <CardTitle>Cluster readiness</CardTitle>
+                <CardTitle>Cluster Capacity</CardTitle>
                 <CardDescription>
                   {selectedClusterPlan.primaryVehicle?.name ?? "-"} · {selectedClusterPlan.status === "fit" ? "ใช้รถหลักคันเดียวได้" : selectedClusterPlan.status === "support" ? "ต้องมี support vehicle" : "ยังเกิน capacity"}
                 </CardDescription>
@@ -1616,7 +1616,7 @@ export default function Home() {
               <CardHeader>
                 <CardTitle>สรุปหลังคำนวณ</CardTitle>
                 <CardDescription>
-                  ต้นทุนจำลองรวม {formatCurrency(result.totalCost)} · objective ใช้ cost model ชุดนี้
+                  Demo cost รวม {formatCurrency(result.totalCost)} · objective ใช้ cost model ชุดนี้
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -2019,9 +2019,9 @@ function CostModelEditor({
           <Calculator className="h-4 w-4" />
         </div>
         <div>
-          <p className="text-sm font-semibold">Cost model จำลอง</p>
+          <p className="text-sm font-semibold">Demo Cost Model</p>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            เป็นค่าสมมุติสำหรับทดสอบ แก้ได้ก่อนรันเพื่อดูผลต่อต้นทุนและการเลือกเส้นทาง
+            เป็น demo values สำหรับทดสอบ แก้ได้ก่อนรันเพื่อดูผลต่อต้นทุนและการเลือกเส้นทาง
           </p>
         </div>
       </div>
