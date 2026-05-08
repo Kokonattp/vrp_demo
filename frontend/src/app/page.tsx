@@ -583,8 +583,9 @@ function generateClusterAssignments(locations: LocationPoint[], orders: Order[],
         },
         { location: undefined, distance: Number.POSITIVE_INFINITY }
       );
-    if (nearestFixed.location && nearestFixed.distance <= 6 && nearestFixed.location.clusterId) {
-      return { ...location, clusterId: nearestFixed.location.clusterId };
+    const anchorClusterId = nearestFixed.location ? generated.get(nearestFixed.location.id) : undefined;
+    if (nearestFixed.location && nearestFixed.distance <= 6 && anchorClusterId) {
+      return { ...location, clusterId: anchorClusterId };
     }
     return { ...location, clusterId: generated.get(location.id) ?? "cluster-1" };
   });
@@ -938,7 +939,18 @@ function loadStoredStudioState(): Partial<StoredStudioState> | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STUDIO_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Partial<StoredStudioState>) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredStudioState>;
+    if (parsed.showClusterColors === undefined && parsed.locations) {
+      return {
+        ...parsed,
+        selectedClusterId: "unassigned",
+        locations: parsed.locations.map((location) =>
+          location.type === "store" ? { ...location, clusterId: undefined, clusterLocked: false } : location
+        )
+      };
+    }
+    return parsed;
   } catch {
     return null;
   }
