@@ -197,6 +197,12 @@ type SavedRoutePlan = StoredStudioState & {
   result: ScenarioResult;
 };
 
+type StudioSyncPayload = {
+  state?: Partial<StoredStudioState> | null;
+  savedRoutePlans?: SavedRoutePlan[];
+  updatedAt?: string | null;
+};
+
 function compactRouteStops(stops: RouteStop[]): DisplayRouteStop[] {
   return stops.reduce<DisplayRouteStop[]>((compact, stop) => {
     const previous = compact[compact.length - 1];
@@ -1197,6 +1203,7 @@ export default function Home() {
   const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({});
   const [showCsvPaste, setShowCsvPaste] = useState(false);
   const [showDailyOrdersPaste, setShowDailyOrdersPaste] = useState(false);
+  const [hasLoadedSharedState, setHasLoadedSharedState] = useState(false);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -1283,10 +1290,9 @@ export default function Home() {
     setHiddenSections((current) => ({ ...current, [id]: !current[id] }));
   };
 
-  useEffect(() => {
-    window.localStorage.setItem(
-      STUDIO_STORAGE_KEY,
-      JSON.stringify({
+  const currentStoredState = useMemo(
+    () =>
+      ({
         locations,
         vehicles,
         orders,
@@ -1295,9 +1301,73 @@ export default function Home() {
         selectedLocationId,
         selectedClusterId,
         showClusterColors
-      } satisfies StoredStudioState)
-    );
-  }, [costModel, locations, orders, planningDate, selectedClusterId, selectedLocationId, showClusterColors, vehicles]);
+      }) satisfies StoredStudioState,
+    [costModel, locations, orders, planningDate, selectedClusterId, selectedLocationId, showClusterColors, vehicles]
+  );
+
+  useEffect(() => {
+    let isActive = true;
+    const controller = new AbortController();
+    fetch(`${API_URL}/api/studio-sync`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const payload = (await response.json()) as StudioSyncPayload;
+        const state = payload.state;
+        if (state?.locations?.length && state?.vehicles?.length && state?.orders?.length && state.costModel) {
+          setLocations(state.locations);
+          setVehicles(state.vehicles);
+          setOrders(state.orders);
+          setCostModel(state.costModel);
+          setPlanningDate(state.planningDate ?? todayDate());
+          setSelectedLocationId(state.selectedLocationId ?? state.locations[0]?.id ?? "depot-bkk");
+          setSelectedClusterId(state.selectedClusterId ?? "unassigned");
+          setShowClusterColors(state.showClusterColors ?? false);
+        }
+        if (Array.isArray(payload.savedRoutePlans)) {
+          setSavedRoutePlans(payload.savedRoutePlans);
+          persistSavedRoutePlans(payload.savedRoutePlans);
+        }
+      })
+      .catch(() => {
+        // Keep the local browser cache as the working copy when shared sync is unavailable.
+      })
+      .finally(() => {
+        if (isActive) setHasLoadedSharedState(true);
+      });
+
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(STUDIO_STORAGE_KEY, JSON.stringify(currentStoredState));
+  }, [currentStoredState]);
+
+  useEffect(() => {
+    if (!hasLoadedSharedState) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch(`${API_URL}/api/studio-sync`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          state: currentStoredState,
+          savedRoutePlans,
+          updatedAt: new Date().toISOString()
+        } satisfies StudioSyncPayload),
+        signal: controller.signal
+      }).catch(() => {
+        // Local storage remains the fallback when the shared backend is unavailable.
+      });
+    }, 700);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [currentStoredState, hasLoadedSharedState, savedRoutePlans]);
 
   useEffect(() => {
     let isActive = true;

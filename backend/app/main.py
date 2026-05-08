@@ -1,8 +1,10 @@
 import math
 import os
 import re
+import json
 from datetime import datetime, timezone
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI
@@ -43,6 +45,7 @@ FRONTEND_ORIGINS = [
     for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
     if origin.strip()
 ]
+STUDIO_SYNC_FILE = Path(os.getenv("STUDIO_SYNC_FILE", "data/studio-sync.json"))
 
 
 class Coordinate(BaseModel):
@@ -149,6 +152,12 @@ class ManualRouteRequest(BaseModel):
     costModel: CostModel = Field(default_factory=CostModel)
 
 
+class StudioSyncPayload(BaseModel):
+    state: dict[str, Any] | None = None
+    savedRoutePlans: list[dict[str, Any]] = Field(default_factory=list)
+    updatedAt: str | None = None
+
+
 class ScenarioResult(BaseModel):
     scenarioId: str
     status: Literal["optimized", "fallback", "infeasible"]
@@ -187,6 +196,50 @@ def health():
         "trafficAware": active_routing_provider() in {"google", "mapbox"} and active_routing_profile_is_traffic_aware(),
         "ortools": pywrapcp is not None,
     }
+
+
+def read_studio_sync() -> dict[str, Any]:
+    if not STUDIO_SYNC_FILE.exists():
+        return {"state": None, "savedRoutePlans": [], "updatedAt": None}
+    try:
+        with STUDIO_SYNC_FILE.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+        return {
+            "state": payload.get("state"),
+            "savedRoutePlans": payload.get("savedRoutePlans") if isinstance(payload.get("savedRoutePlans"), list) else [],
+            "updatedAt": payload.get("updatedAt"),
+        }
+    except (OSError, json.JSONDecodeError):
+        return {"state": None, "savedRoutePlans": [], "updatedAt": None}
+
+
+def write_studio_sync(payload: StudioSyncPayload) -> dict[str, Any]:
+    next_payload = {
+        "state": payload.state,
+        "savedRoutePlans": payload.savedRoutePlans[:24],
+        "updatedAt": payload.updatedAt or datetime.now(timezone.utc).isoformat(),
+    }
+    STUDIO_SYNC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = STUDIO_SYNC_FILE.with_suffix(f"{STUDIO_SYNC_FILE.suffix}.tmp")
+    with temp_file.open("w", encoding="utf-8") as file:
+        json.dump(next_payload, file, ensure_ascii=False)
+    temp_file.replace(STUDIO_SYNC_FILE)
+    return next_payload
+
+
+@app.get("/api/studio-sync")
+def get_studio_sync():
+    return read_studio_sync()
+
+
+@app.put("/api/studio-sync")
+def put_studio_sync(payload: StudioSyncPayload):
+    return write_studio_sync(payload)
+
+
+@app.post("/api/studio-sync")
+def post_studio_sync(payload: StudioSyncPayload):
+    return write_studio_sync(payload)
 
 
 @app.get("/kaitheathcheck")

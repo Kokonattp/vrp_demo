@@ -61,3 +61,13 @@ Mapbox `driving-traffic` uses live/historic traffic where covered and supports u
 ```
 
 The model is intentionally editable test data. The optimizer uses variable distance/time cost and active vehicle fixed cost while planning, then returns route-level costs, `costBreakdown`, `totalCost`, and `summary`.
+
+## Shared Planner State
+
+`GET /api/studio-sync` and `PUT /api/studio-sync` store the current planner inputs and saved route plans for all devices that use the same backend.
+
+```bash
+STUDIO_SYNC_FILE=/data/studio-sync.json
+```
+
+Use a persistent volume path for `STUDIO_SYNC_FILE` in production. If this path is inside an ephemeral container filesystem, saved plans can still disappear after redeploy/restart.

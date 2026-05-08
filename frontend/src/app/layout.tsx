@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "สตูดิโอจำลอง VRP",
-  description: "วางแผนและจำลองเส้นทางขนส่งบนแผนที่จริง"
+  title: "VRP Simulation Studio",
+  description: "Plan, simulate, and export delivery routes on a real map."
 };
 
 export default function RootLayout({
