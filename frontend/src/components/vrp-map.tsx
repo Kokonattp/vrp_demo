@@ -8,6 +8,7 @@ const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 const fallbackRouteLineColor = "#1B2E4B";
 const depotMarkerColor = "#1B2E4B";
 const storeMarkerColor = "#EF4444";
+const storeMarkerDetailZoom = 9.5;
 const trafficColors = {
   fast: "#16A34A",
   slow: "#D97706",
@@ -243,7 +244,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     const map = mapRef.current;
     if (!map) return;
 
-    const showAllStores = map.getZoom() >= 7.5;
+    const showAllStores = map.getZoom() >= storeMarkerDetailZoom;
     Object.entries(markerRef.current).forEach(([id, marker]) => {
       const metadata = markerMetadataRef.current[id];
       const shouldShow = metadata?.type === "depot" || id === selectedLocationId || showAllStores;
