@@ -45,7 +45,16 @@ FRONTEND_ORIGINS = [
     for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
     if origin.strip()
 ]
-STUDIO_SYNC_FILE = Path(os.getenv("STUDIO_SYNC_FILE", "data/studio-sync.json"))
+
+
+def default_studio_sync_file() -> Path:
+    persistent_data_dir = Path("/data")
+    if persistent_data_dir.exists() and os.access(persistent_data_dir, os.W_OK):
+        return persistent_data_dir / "studio-sync.json"
+    return Path("data/studio-sync.json")
+
+
+STUDIO_SYNC_FILE = Path(os.getenv("STUDIO_SYNC_FILE") or default_studio_sync_file())
 
 
 class Coordinate(BaseModel):

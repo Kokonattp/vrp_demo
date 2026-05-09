@@ -110,16 +110,17 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
+  const lastAutoFitSignatureRef = useRef<string | undefined>(undefined);
+  const lastFocusedLocationIdRef = useRef<string | undefined>(undefined);
   const [mapReady, setMapReady] = useState(false);
   const [showTrafficImpact, setShowTrafficImpact] = useState(false);
   const [showCityTraffic, setShowCityTraffic] = useState(false);
 
-  const bounds = useMemo(() => {
-    if (!locations.length) return undefined;
-    const first = locations[0];
-    const lngLatBounds = new maplibregl.LngLatBounds([first.lng, first.lat], [first.lng, first.lat]);
-    locations.forEach((location) => lngLatBounds.extend([location.lng, location.lat]));
-    return lngLatBounds;
+  const locationBoundsSignature = useMemo(() => {
+    return locations
+      .map((location) => `${location.id}:${location.lat.toFixed(6)}:${location.lng.toFixed(6)}`)
+      .sort()
+      .join("|");
   }, [locations]);
 
   const markerCoordinateByLocationId = useMemo(() => {
@@ -260,9 +261,16 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !bounds || !mapReady) return;
+    if (!map || !locations.length || !mapReady || !locationBoundsSignature) return;
+    if (lastAutoFitSignatureRef.current === locationBoundsSignature) return;
+
+    const first = locations[0];
+    const bounds = new maplibregl.LngLatBounds([first.lng, first.lat], [first.lng, first.lat]);
+    locations.forEach((location) => bounds.extend([location.lng, location.lat]));
+
+    lastAutoFitSignatureRef.current = locationBoundsSignature;
     map.fitBounds(bounds as LngLatBoundsLike, { padding: 72, duration: 600, maxZoom: 13 });
-  }, [bounds, mapReady]);
+  }, [locationBoundsSignature, locations, mapReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -339,6 +347,11 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         `</div>`
       ].join("");
       const popup = new maplibregl.Popup({ offset: 18, closeButton: true }).setHTML(popupHtml);
+      popup.on("close", () => {
+        if (lastFocusedLocationIdRef.current === location.id) {
+          lastFocusedLocationIdRef.current = undefined;
+        }
+      });
       const markerElement = document.createElement("div");
       markerElement.className = ["vrp-marker", location.type === "depot" ? "vrp-marker--depot" : "vrp-marker--store", selectedLocationId === location.id ? "vrp-marker--selected" : ""]
         .filter(Boolean)
@@ -391,10 +404,12 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady || !selectedLocationId) return;
-    const selected = locations.find((location) => location.id === selectedLocationId);
-    if (!selected) return;
-    const marker = markerRef.current[selected.id];
-    const target = marker?.getLngLat() ?? selected;
+    if (lastFocusedLocationIdRef.current === selectedLocationId) return;
+
+    const marker = markerRef.current[selectedLocationId];
+    const target = marker?.getLngLat();
+    if (!target) return;
+    lastFocusedLocationIdRef.current = selectedLocationId;
     map.easeTo({
       center: [target.lng, target.lat],
       zoom: Math.max(map.getZoom(), 11.5),
@@ -404,7 +419,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     if (marker && popup) {
       popup.setLngLat(marker.getLngLat()).addTo(map);
     }
-  }, [locations, mapReady, selectedLocationId]);
+  }, [mapReady, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
