@@ -7,6 +7,8 @@ import {
   ChevronDown,
   ChevronUp,
   CircleHelp,
+  Cloud,
+  CloudOff,
   Download,
   FileUp,
   MapPin,
@@ -106,6 +108,7 @@ const panels = [
 const clusterColors = ["#0F766E", "#D97706", "#2563EB", "#7C3AED", "#E11D48", "#475569"];
 
 type OptimizerState = "warming" | "ready" | "traffic" | "offline";
+type SyncState = "loading" | "syncing" | "synced" | "offline";
 type OptimizeMode = "cluster-support" | "strict-cluster";
 type RoutePlanFilter = "all" | "attention" | "late" | "heavy";
 type PrintMode = "workorders" | "route-plan" | null;
@@ -125,6 +128,16 @@ function statusLabel(value: ScenarioResult["status"] | OptimizerState) {
     ready: "พร้อมใช้",
     traffic: "จราจรจริง",
     offline: "ออฟไลน์"
+  };
+  return labels[value];
+}
+
+function syncStatusLabel(value: SyncState) {
+  const labels = {
+    loading: "Loading sync",
+    syncing: "Syncing",
+    synced: "Saved",
+    offline: "Local only"
   };
   return labels[value];
 }
@@ -1204,6 +1217,8 @@ export default function Home() {
   const [showCsvPaste, setShowCsvPaste] = useState(false);
   const [showDailyOrdersPaste, setShowDailyOrdersPaste] = useState(false);
   const [hasLoadedSharedState, setHasLoadedSharedState] = useState(false);
+  const [syncState, setSyncState] = useState<SyncState>("loading");
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   const depot = useMemo(() => locations.find((location) => location.type === "depot") ?? locations[0], [locations]);
   const dailyOrders = useMemo(
@@ -1310,7 +1325,10 @@ export default function Home() {
     const controller = new AbortController();
     fetch(`${API_URL}/api/studio-sync`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (isActive) setSyncState("offline");
+          return;
+        }
         const payload = (await response.json()) as StudioSyncPayload;
         const state = payload.state;
         if (state?.locations?.length && state?.vehicles?.length && state?.orders?.length && state.costModel) {
@@ -1327,8 +1345,14 @@ export default function Home() {
           setSavedRoutePlans(payload.savedRoutePlans);
           persistSavedRoutePlans(payload.savedRoutePlans);
         }
+        if (isActive) {
+          setLastSyncedAt(payload.updatedAt ?? new Date().toISOString());
+          setSyncState("synced");
+        }
       })
-      .catch(() => {
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        if (isActive) setSyncState("offline");
         // Keep the local browser cache as the working copy when shared sync is unavailable.
       })
       .finally(() => {
@@ -1349,6 +1373,7 @@ export default function Home() {
     if (!hasLoadedSharedState) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      setSyncState("syncing");
       fetch(`${API_URL}/api/studio-sync`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1358,9 +1383,21 @@ export default function Home() {
           updatedAt: new Date().toISOString()
         } satisfies StudioSyncPayload),
         signal: controller.signal
-      }).catch(() => {
-        // Local storage remains the fallback when the shared backend is unavailable.
-      });
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            setSyncState("offline");
+            return;
+          }
+          const payload = (await response.json()) as StudioSyncPayload;
+          setLastSyncedAt(payload.updatedAt ?? new Date().toISOString());
+          setSyncState("synced");
+        })
+        .catch((error) => {
+          if (error?.name === "AbortError") return;
+          setSyncState("offline");
+          // Local storage remains the fallback when the shared backend is unavailable.
+        });
     }, 700);
 
     return () => {
@@ -1972,6 +2009,9 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={optimizerState === "ready" || optimizerState === "traffic" ? "success" : "muted"}>{statusLabel(optimizerState)}</Badge>
+          <Badge variant={syncState === "synced" ? "success" : syncState === "offline" ? "warning" : "muted"}>
+            {syncStatusLabel(syncState)}
+          </Badge>
           <Button variant="outline" size="sm" onClick={() => setShowGuide(true)}>
             <CircleHelp className="h-4 w-4" />
             วิธีใช้
@@ -2456,6 +2496,7 @@ export default function Home() {
             </div>
           </div>
           <RoutingConfigStatus health={routingHealth} optimizerState={optimizerState} hasCityTrafficToken={hasCityTrafficToken} />
+          <SyncStatusPanel syncState={syncState} lastSyncedAt={lastSyncedAt} />
           <Card className="mb-4 border-slate-300">
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-3">
@@ -2968,6 +3009,33 @@ function RoutingConfigStatus({
         <RouteMetric label="Routing API" value={health.routingApi ? "Connected" : "Fallback"} />
         <RouteMetric label="OR-Tools" value={health.ortools ? "Ready" : "Fallback"} />
         <RouteMetric label="City traffic" value={hasCityTrafficToken ? "Tile layer" : "No token"} />
+      </div>
+    </div>
+  );
+}
+
+function SyncStatusPanel({ syncState, lastSyncedAt }: { syncState: SyncState; lastSyncedAt: string | null }) {
+  const isOffline = syncState === "offline";
+  const lastSavedLabel = lastSyncedAt ? new Date(lastSyncedAt).toLocaleString("th-TH") : "-";
+  return (
+    <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-xl ${isOffline ? "bg-amber-100 text-amber-800" : "bg-primary text-primary-foreground"}`}>
+            {isOffline ? <CloudOff className="h-4 w-4" /> : <Cloud className="h-4 w-4" />}
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">Planner sync</p>
+            <p className="truncate text-xs text-muted-foreground">
+              {isOffline ? "บันทึกในเครื่องนี้ก่อน เพราะ backend sync ยังใช้ไม่ได้" : "บันทึก state และ saved plans ผ่าน backend"}
+            </p>
+          </div>
+        </div>
+        <Badge variant={syncState === "synced" ? "success" : isOffline ? "warning" : "muted"}>{syncStatusLabel(syncState)}</Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <RouteMetric label="Shared backend" value={isOffline ? "Unavailable" : syncState === "loading" ? "Loading" : "Connected"} />
+        <RouteMetric label="Last saved" value={lastSavedLabel} />
       </div>
     </div>
   );
