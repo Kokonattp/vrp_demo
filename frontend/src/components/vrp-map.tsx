@@ -1,7 +1,7 @@
 "use client";
 
 import maplibregl, { LngLatBoundsLike, Map as MapLibreMap } from "maplibre-gl";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Coordinate, LocationPoint, Order, RoutePlan } from "@/types/vrp";
 
 const mapStyle = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -110,11 +110,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
-  const markerMetadataRef = useRef<Record<string, { type: LocationPoint["type"] }>>({});
   const lastAutoFitSignatureRef = useRef<string | undefined>(undefined);
   const lastFocusedLocationIdRef = useRef<string | undefined>(undefined);
-  const skipNextSelectedFocusRef = useRef<string | undefined>(undefined);
-  const hasHandledInitialSelectionRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
   const [showTrafficImpact, setShowTrafficImpact] = useState(false);
   const [showCityTraffic, setShowCityTraffic] = useState(false);
@@ -239,18 +236,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     return summaryByLocation;
   }, [orders]);
 
-  const updateMarkerVisibility = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const showAllStores = map.getZoom() >= 7.5;
-    Object.entries(markerRef.current).forEach(([id, marker]) => {
-      const metadata = markerMetadataRef.current[id];
-      const shouldShow = metadata?.type === "depot" || id === selectedLocationId || showAllStores;
-      marker.getElement().style.display = shouldShow ? "" : "none";
-    });
-  }, [selectedLocationId]);
-
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -268,7 +253,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     return () => {
       Object.values(markerRef.current).forEach((marker) => marker.remove());
       markerRef.current = {};
-      markerMetadataRef.current = {};
       map.remove();
       mapRef.current = null;
       setMapReady(false);
@@ -283,22 +267,10 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     const first = locations[0];
     const bounds = new maplibregl.LngLatBounds([first.lng, first.lat], [first.lng, first.lat]);
     locations.forEach((location) => bounds.extend([location.lng, location.lat]));
-    const isWideArea = Math.abs(bounds.getEast() - bounds.getWest()) > 3 || Math.abs(bounds.getNorth() - bounds.getSouth()) > 3;
 
     lastAutoFitSignatureRef.current = locationBoundsSignature;
-    if (isWideArea) return;
     map.fitBounds(bounds as LngLatBoundsLike, { padding: 72, duration: 600, maxZoom: 13 });
   }, [locationBoundsSignature, locations, mapReady]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady) return;
-    map.on("zoomend", updateMarkerVisibility);
-    updateMarkerVisibility();
-    return () => {
-      map.off("zoomend", updateMarkerVisibility);
-    };
-  }, [mapReady, updateMarkerVisibility]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -307,7 +279,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     Object.entries(markerRef.current).forEach(([id, marker]) => {
       if (!locations.some((location) => location.id === id)) {
         marker.remove();
-        delete markerMetadataRef.current[id];
         delete markerRef.current[id];
       }
     });
@@ -316,7 +287,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       const routeStop = routeStopByLocationId.get(location.id);
       const orderSummary = orderSummaryByLocationId.get(location.id);
       const markerCoordinate = markerCoordinateByLocationId.get(location.id) ?? location;
-      markerMetadataRef.current[location.id] = { type: location.type };
       const markerLabel = location.type === "depot" ? "D" : routeStop ? String(routeStop.sequence) : "";
       const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? clusterColorByLocationId[location.id] ?? storeMarkerColor;
       const locationType = location.type === "depot" ? "คลัง / จุดพักรถ" : "สาขา";
@@ -405,13 +375,9 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         existing.getElement().setAttribute("aria-label", markerElement.getAttribute("aria-label") ?? location.name);
         existing.getElement().onclick = (event) => {
           event.stopPropagation();
-          if (selectedLocationId !== location.id) {
-            skipNextSelectedFocusRef.current = location.id;
-          }
           onLocationSelect?.(location.id);
           popup.setLngLat(existing.getLngLat()).addTo(map);
         };
-        updateMarkerVisibility();
         return;
       }
 
@@ -422,9 +388,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
 
       markerElement.onclick = (event) => {
         event.stopPropagation();
-        if (selectedLocationId !== location.id) {
-          skipNextSelectedFocusRef.current = location.id;
-        }
         onLocationSelect?.(location.id);
         popup.setLngLat(marker.getLngLat()).addTo(map);
       };
@@ -435,24 +398,12 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       });
 
       markerRef.current[location.id] = marker;
-      updateMarkerVisibility();
     });
-  }, [clusterColorByLocationId, locations, mapReady, markerCoordinateByLocationId, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId, updateMarkerVisibility]);
+  }, [clusterColorByLocationId, locations, mapReady, markerCoordinateByLocationId, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady || !selectedLocationId) return;
-    if (!hasHandledInitialSelectionRef.current) {
-      hasHandledInitialSelectionRef.current = true;
-      updateMarkerVisibility();
-      return;
-    }
-    if (skipNextSelectedFocusRef.current === selectedLocationId) {
-      skipNextSelectedFocusRef.current = undefined;
-      lastFocusedLocationIdRef.current = selectedLocationId;
-      updateMarkerVisibility();
-      return;
-    }
     if (lastFocusedLocationIdRef.current === selectedLocationId) return;
 
     const marker = markerRef.current[selectedLocationId];
@@ -468,7 +419,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     if (marker && popup) {
       popup.setLngLat(marker.getLngLat()).addTo(map);
     }
-  }, [mapReady, selectedLocationId, updateMarkerVisibility]);
+  }, [mapReady, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
