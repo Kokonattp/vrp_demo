@@ -123,32 +123,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       .join("|");
   }, [locations]);
 
-  const markerCoordinateByLocationId = useMemo(() => {
-    const buckets = new Map<string, LocationPoint[]>();
-    locations.forEach((location) => {
-      const key = `${location.lat.toFixed(3)}:${location.lng.toFixed(3)}`;
-      buckets.set(key, [...(buckets.get(key) ?? []), location]);
-    });
-
-    const coordinates = new Map<string, Coordinate>();
-    buckets.forEach((bucket) => {
-      if (bucket.length === 1) {
-        coordinates.set(bucket[0].id, { lat: bucket[0].lat, lng: bucket[0].lng });
-        return;
-      }
-
-      bucket.forEach((location, index) => {
-        const angle = (index / bucket.length) * Math.PI * 2;
-        const radius = 0.00028 + Math.floor(index / 8) * 0.00012;
-        coordinates.set(location.id, {
-          lat: location.lat + Math.sin(angle) * radius,
-          lng: location.lng + Math.cos(angle) * radius
-        });
-      });
-    });
-    return coordinates;
-  }, [locations]);
-
   const routeStopByLocationId = useMemo(() => {
     const stopsByLocation = new Map<
       string,
@@ -286,7 +260,6 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     locations.forEach((location) => {
       const routeStop = routeStopByLocationId.get(location.id);
       const orderSummary = orderSummaryByLocationId.get(location.id);
-      const markerCoordinate = markerCoordinateByLocationId.get(location.id) ?? location;
       const markerLabel = location.type === "depot" ? "D" : routeStop ? String(routeStop.sequence) : "";
       const markerColor = location.type === "depot" ? depotMarkerColor : routeStop?.color ?? clusterColorByLocationId[location.id] ?? storeMarkerColor;
       const locationType = location.type === "depot" ? "คลัง / จุดพักรถ" : "สาขา";
@@ -366,7 +339,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
 
       const existing = markerRef.current[location.id];
       if (existing) {
-        existing.setLngLat([markerCoordinate.lng, markerCoordinate.lat]);
+        existing.setLngLat([location.lng, location.lat]);
         existing.setPopup(popup);
         existing.getElement().className = markerElement.className;
         existing.getElement().style.backgroundColor = markerColor;
@@ -382,7 +355,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       }
 
       const marker = new maplibregl.Marker({ element: markerElement, draggable: true, anchor: "center" })
-        .setLngLat([markerCoordinate.lng, markerCoordinate.lat])
+        .setLngLat([location.lng, location.lat])
         .setPopup(popup)
         .addTo(map);
 
@@ -399,7 +372,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
 
       markerRef.current[location.id] = marker;
     });
-  }, [clusterColorByLocationId, locations, mapReady, markerCoordinateByLocationId, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+  }, [clusterColorByLocationId, locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
 
   useEffect(() => {
     const map = mapRef.current;
