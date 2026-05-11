@@ -1213,7 +1213,11 @@ export default function Home() {
   const [savedRoutePlans, setSavedRoutePlans] = useState<SavedRoutePlan[]>(() => loadSavedRoutePlans());
   const [routingHealth, setRoutingHealth] = useState<RoutingHealth>({ status: "offline" });
   const [manualRouteSnapshots, setManualRouteSnapshots] = useState<Record<string, RoutePlan>>({});
-  const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({});
+  const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({
+    "branch-data": true,
+    "daily-orders": true,
+    "selected-branch": true
+  });
   const [showCsvPaste, setShowCsvPaste] = useState(false);
   const [showDailyOrdersPaste, setShowDailyOrdersPaste] = useState(false);
   const [hasLoadedSharedState, setHasLoadedSharedState] = useState(false);
@@ -2443,26 +2447,6 @@ export default function Home() {
         </aside>
 
         <section className="relative min-h-0 overflow-hidden">
-          <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-xl border border-slate-300 bg-white/95 px-3 py-2 shadow-[0_14px_32px_rgba(15,23,42,0.16)]">
-            <p className="text-xs font-medium">
-              แผนที่จริง · <span className="text-muted-foreground">ลากหมุดเพื่อแก้พิกัด</span>
-            </p>
-          </div>
-          <div className="pointer-events-none absolute left-4 top-16 z-10 max-w-[260px] rounded-xl border border-slate-300 bg-white/95 p-3 shadow-[0_16px_38px_rgba(15,23,42,0.16)]">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold">Cluster legend</p>
-              <span className="text-[10px] text-muted-foreground">{optimizeModeLabel(optimizeMode)}</span>
-            </div>
-            <div className="grid gap-1.5">
-              {clusters.slice(0, 6).map((cluster) => (
-                <div key={cluster.id} className="flex items-center gap-2 text-[11px] text-slate-700">
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cluster.color }} />
-                  <span className="truncate">{cluster.name}</span>
-                  <span className="ml-auto text-muted-foreground">{cluster.branchIds.length}</span>
-                </div>
-              ))}
-            </div>
-          </div>
           <VrpMap
             locations={locations}
             orders={dailyOrders}

@@ -115,6 +115,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   const [mapReady, setMapReady] = useState(false);
   const [showTrafficImpact, setShowTrafficImpact] = useState(false);
   const [showCityTraffic, setShowCityTraffic] = useState(false);
+  const [showTrafficControls, setShowTrafficControls] = useState(false);
 
   const locationBoundsSignature = useMemo(() => {
     return locations
@@ -622,6 +623,16 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   return (
     <div className="relative h-full min-h-0 w-full overflow-hidden bg-muted">
       <div ref={containerRef} className="h-full min-h-0 w-full" />
+      {!showTrafficControls && (
+        <button
+          type="button"
+          onClick={() => setShowTrafficControls(true)}
+          className="pointer-events-auto absolute left-5 top-5 z-30 rounded-xl border border-slate-300 bg-white/95 px-3 py-2 text-xs font-bold text-primary shadow-[0_12px_28px_rgba(15,23,42,0.12)] backdrop-blur hover:bg-secondary"
+        >
+          Traffic
+        </button>
+      )}
+      {showTrafficControls && (
       <div className="pointer-events-auto absolute left-5 top-5 z-30 rounded-2xl border border-slate-300 bg-white/95 p-3 shadow-[0_16px_40px_rgba(15,23,42,0.14)] backdrop-blur">
         <div className="mb-2 flex items-center justify-between gap-3">
           <div className="flex gap-2">
@@ -651,6 +662,13 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
               City
             </button>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowTrafficControls(false)}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-500 hover:bg-secondary"
+          >
+            Hide
+          </button>
           <span className="text-[11px] font-semibold text-slate-500">{showTrafficImpact || showCityTraffic ? "Traffic ON" : "Traffic OFF"}</span>
         </div>
         {!mapboxTrafficToken && (
@@ -705,6 +723,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
