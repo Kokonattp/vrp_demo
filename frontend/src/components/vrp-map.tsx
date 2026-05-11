@@ -113,8 +113,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   const lastAutoFitSignatureRef = useRef<string | undefined>(undefined);
   const lastFocusedLocationIdRef = useRef<string | undefined>(undefined);
   const [mapReady, setMapReady] = useState(false);
-  const showTrafficImpact = false;
-  const showCityTraffic = false;
+  const [showTrafficImpact, setShowTrafficImpact] = useState(false);
+  const [showCityTraffic, setShowCityTraffic] = useState(false);
 
   const locationBoundsSignature = useMemo(() => {
     return locations
@@ -622,6 +622,36 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   return (
     <div className="relative h-full min-h-0 w-full overflow-hidden bg-muted">
       <div ref={containerRef} className="h-full min-h-0 w-full" />
+      <div className="pointer-events-auto absolute left-5 top-5 z-30 flex max-w-[calc(100%-6rem)] items-center gap-2 rounded-xl border border-slate-300 bg-white/95 p-2 shadow-[0_12px_28px_rgba(15,23,42,0.12)] backdrop-blur">
+        <button
+          type="button"
+          disabled={!routes.length}
+          onClick={() => setShowTrafficImpact((current) => !current)}
+          className={
+            showTrafficImpact
+              ? "h-10 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground"
+              : "h-10 rounded-lg border border-slate-200 bg-[#F8FAFC] px-4 text-xs font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+          }
+        >
+          Route
+        </button>
+        <button
+          type="button"
+          disabled={!mapboxTrafficToken}
+          onClick={() => setShowCityTraffic((current) => !current)}
+          className={
+            showCityTraffic
+              ? "h-10 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground"
+              : "h-10 rounded-lg border border-slate-200 bg-[#F8FAFC] px-4 text-xs font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+          }
+          title={mapboxTrafficToken ? "Show Mapbox city traffic" : "Set NEXT_PUBLIC_MAPBOX_TOKEN to enable city traffic"}
+        >
+          City
+        </button>
+        <span className="whitespace-nowrap px-2 text-[11px] font-semibold text-slate-500">
+          {showTrafficImpact || showCityTraffic ? "Traffic ON" : "Traffic OFF"}
+        </span>
+      </div>
     </div>
   );
 }
