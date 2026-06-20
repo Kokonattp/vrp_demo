@@ -48,13 +48,14 @@ Set these in Vercel, or in `frontend/.env.local` for local testing:
 
 ```env
 # Preferred when the backend is a Hugging Face Space or any server-side/private API.
-HF_API_URL=https://nattp-vrp-demo-api.hf.space
+HF_API_URL=https://your-space.hf.space
+
 
 # Required only when the backend is private and needs an HF token.
 HF_TOKEN=hf_your_read_token
 
 # Optional public backend fallback. Not needed when HF_API_URL is set.
-NEXT_PUBLIC_API_URL=https://nattp-vrp-demo-api.hf.space
+NEXT_PUBLIC_API_URL=https://your-backend.example.com
 
 # Optional: enables the City traffic layer on the map.
 NEXT_PUBLIC_MAPBOX_TOKEN=pk_your_mapbox_public_token
