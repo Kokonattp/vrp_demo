@@ -26,10 +26,12 @@ const locationClusterSourceId = "location-clusters";
 const locationClusterLayerId = "location-cluster-circles";
 const locationClusterCountLayerId = "location-cluster-count";
 const locationUnclusteredLayerId = "location-unclustered";
+const locationClusterInteractiveLayerIds = [locationClusterLayerId, locationClusterCountLayerId] as const;
 const locationAccessSourceId = "location-access-constraints";
 const locationAccessLayerId = "location-access-constraint-circles";
 
 type BasemapContext = "buildings" | "places" | "pois";
+type ClusterClickState = "ready" | "expanding" | "expanded" | "error";
 
 function setBasemapContextVisibility(map: MapLibreMap, context: BasemapContext, visible: boolean) {
   map.getStyle().layers?.forEach((layer) => {
@@ -169,6 +171,7 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
+  const clusterHitMarkerRef = useRef<Record<string, maplibregl.Marker>>({});
   const lastAutoFitSignatureRef = useRef<string | undefined>(undefined);
   const lastFocusedLocationIdRef = useRef<string | undefined>(undefined);
   const [mapReady, setMapReady] = useState(false);
@@ -178,8 +181,12 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
   const [showPois, setShowPois] = useState(true);
   const [showOperationalPoints, setShowOperationalPoints] = useState(true);
   const [showAccessConstraints, setShowAccessConstraints] = useState(true);
+  const [clusterClickState, setClusterClickState] = useState<ClusterClickState>("ready");
+  const [clusterLayerReady, setClusterLayerReady] = useState(false);
+  const [renderedClusterCount, setRenderedClusterCount] = useState(0);
   const [showTrafficImpact, setShowTrafficImpact] = useState(false);
   const [showCityTraffic, setShowCityTraffic] = useState(false);
+  const clusterClickInFlightRef = useRef(false);
   const hasApproximateRoutes = routes.some((route) => route.geometrySource !== "google" && route.geometrySource !== "mapbox" && route.geometrySource !== "osrm");
 
   const locationBoundsSignature = useMemo(() => {
@@ -534,7 +541,7 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
           data: locationClusterData,
           cluster: true,
           clusterMaxZoom,
-          clusterRadius: 46
+          clusterRadius: 64
         });
       }
 
@@ -596,16 +603,34 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
       });
     };
 
-    const handleClusterClick = async (event: maplibregl.MapMouseEvent) => {
-      const features = map.queryRenderedFeatures(event.point, { layers: [locationClusterLayerId] });
-      const feature = features[0];
-      const clusterId = feature?.properties?.cluster_id;
+    const expandCluster = async (clusterId: number, coordinates: [number, number]) => {
+      if (clusterClickInFlightRef.current) return;
       const source = map.getSource(locationClusterSourceId) as maplibregl.GeoJSONSource | undefined;
-      if (typeof clusterId !== "number" || !source || feature?.geometry.type !== "Point") return;
+      if (!source) return;
 
-      const expansionZoom = await source.getClusterExpansionZoom(clusterId);
-      const [lng, lat] = feature.geometry.coordinates;
-      map.easeTo({ center: [lng, lat], zoom: Math.min(expansionZoom, individualMarkerZoom + 1), duration: 500 });
+      clusterClickInFlightRef.current = true;
+      setClusterClickState("expanding");
+      try {
+        const expansionZoom = await source.getClusterExpansionZoom(clusterId);
+        if (mapRef.current !== map) return;
+        const targetZoom = Math.min(Math.max(expansionZoom, map.getZoom() + 0.75), individualMarkerZoom + 1);
+        map.easeTo({ center: coordinates, zoom: targetZoom, duration: 500 });
+        setClusterClickState("expanded");
+      } catch {
+        setClusterClickState("error");
+      } finally {
+        clusterClickInFlightRef.current = false;
+      }
+    };
+    const handleClusterClick = (event: maplibregl.MapMouseEvent) => {
+      if (clusterClickInFlightRef.current) return;
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: locationClusterInteractiveLayerIds.filter((layerId) => Boolean(map.getLayer(layerId)))
+      });
+      const feature = features.find((candidate) => typeof candidate.properties?.cluster_id === "number");
+      const clusterId = feature?.properties?.cluster_id;
+      if (typeof clusterId !== "number" || feature?.geometry.type !== "Point") return;
+      void expandCluster(clusterId, feature.geometry.coordinates as [number, number]);
     };
     const handleClusterMouseEnter = () => {
       map.getCanvas().style.cursor = "pointer";
@@ -613,21 +638,138 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
     const handleClusterMouseLeave = () => {
       map.getCanvas().style.cursor = "";
     };
+    const refreshClusterRenderState = () => {
+      const layerIds = locationClusterInteractiveLayerIds.filter((layerId) => Boolean(map.getLayer(layerId)));
+      const renderedFeatures = layerIds.length
+        ? map.queryRenderedFeatures({ layers: layerIds })
+        : [];
+      const clusterIds = new Set(
+        renderedFeatures
+          .map((feature) => feature.properties?.cluster_id)
+          .filter((clusterId): clusterId is number => typeof clusterId === "number")
+      );
+      setClusterLayerReady(layerIds.length === locationClusterInteractiveLayerIds.length);
+      setRenderedClusterCount(clusterIds.size);
+    };
+    const syncClusterHitTargets = () => {
+      if (!showOperationalPoints) {
+        Object.values(clusterHitMarkerRef.current).forEach((marker) => marker.remove());
+        clusterHitMarkerRef.current = {};
+        return;
+      }
 
-    if (map.isStyleLoaded()) {
+      const layerIds = locationClusterInteractiveLayerIds.filter((layerId) => Boolean(map.getLayer(layerId)));
+      const clusterFeatures = new Map<string, { clusterId: number; coordinates: [number, number]; count: string }>();
+      if (layerIds.length) {
+        map.queryRenderedFeatures({ layers: layerIds }).forEach((feature) => {
+          if (feature.geometry.type !== "Point" || typeof feature.properties?.cluster_id !== "number") return;
+          const clusterId = feature.properties.cluster_id;
+          const coordinates = feature.geometry.coordinates as [number, number];
+          clusterFeatures.set(String(clusterId), {
+            clusterId,
+            coordinates,
+            count: String(feature.properties.point_count_abbreviated ?? feature.properties.point_count ?? "")
+          });
+        });
+      }
+
+      Object.entries(clusterHitMarkerRef.current).forEach(([key, marker]) => {
+        if (!clusterFeatures.has(key)) {
+          marker.remove();
+          delete clusterHitMarkerRef.current[key];
+        }
+      });
+
+      clusterFeatures.forEach(({ clusterId, coordinates, count }, key) => {
+        const existing = clusterHitMarkerRef.current[key];
+        if (existing) {
+          existing.setLngLat(coordinates);
+          existing.getElement().textContent = count;
+          existing.getElement().setAttribute("aria-label", `ขยาย cluster ${count} จุด`);
+          return;
+        }
+
+        const element = document.createElement("button");
+        element.type = "button";
+        element.className = "vrp-cluster-hit-target";
+        element.textContent = count;
+        element.setAttribute("aria-label", `ขยาย cluster ${count} จุด`);
+        Object.assign(element.style, {
+          alignItems: "center",
+          background: "#1B2E4B",
+          border: "2px solid #ffffff",
+          borderRadius: "9999px",
+          boxShadow: "0 4px 12px rgba(15, 23, 42, 0.24)",
+          color: "#ffffff",
+          cursor: "pointer",
+          display: "flex",
+          fontSize: "12px",
+          fontWeight: "800",
+          height: "36px",
+          justifyContent: "center",
+          padding: "0",
+          width: "36px",
+          zIndex: "40"
+        });
+        element.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void expandCluster(clusterId, coordinates);
+        });
+        const marker = new maplibregl.Marker({ element, anchor: "center" })
+          .setLngLat(coordinates)
+          .addTo(map);
+        marker.getElement().setAttribute("aria-label", `ขยาย cluster ${count} จุด`);
+        clusterHitMarkerRef.current[key] = marker;
+      });
+    };
+
+    const setupLocationClusters = () => {
       renderLocationClusters();
-      map.on("click", locationClusterLayerId, handleClusterClick);
-      map.on("mouseenter", locationClusterLayerId, handleClusterMouseEnter);
-      map.on("mouseleave", locationClusterLayerId, handleClusterMouseLeave);
-    } else {
-      map.once("load", renderLocationClusters);
+      locationClusterInteractiveLayerIds.forEach((layerId) => {
+        if (!map.getLayer(layerId)) return;
+        map.on("mouseenter", layerId, handleClusterMouseEnter);
+        map.on("mouseleave", layerId, handleClusterMouseLeave);
+      });
+      map.on("click", handleClusterClick);
+      refreshClusterRenderState();
+      syncClusterHitTargets();
+    };
+    let clusterSetupComplete = false;
+    const trySetupLocationClusters = () => {
+      if (clusterSetupComplete || !map.isStyleLoaded()) return;
+      clusterSetupComplete = true;
+      if (clusterSetupRetryId !== undefined) window.clearInterval(clusterSetupRetryId);
+      setupLocationClusters();
+    };
+
+    const clusterSetupRetryId = window.setInterval(trySetupLocationClusters, 250);
+    if (map.isStyleLoaded()) trySetupLocationClusters();
+    else {
+      map.on("load", trySetupLocationClusters);
+      map.on("idle", trySetupLocationClusters);
+      map.on("styledata", trySetupLocationClusters);
     }
+    map.on("idle", refreshClusterRenderState);
+    map.on("idle", syncClusterHitTargets);
+    map.on("moveend", refreshClusterRenderState);
+    map.on("moveend", syncClusterHitTargets);
 
     return () => {
-      map.off("load", renderLocationClusters);
-      map.off("click", locationClusterLayerId, handleClusterClick);
-      map.off("mouseenter", locationClusterLayerId, handleClusterMouseEnter);
-      map.off("mouseleave", locationClusterLayerId, handleClusterMouseLeave);
+      map.off("load", trySetupLocationClusters);
+      map.off("idle", trySetupLocationClusters);
+      map.off("styledata", trySetupLocationClusters);
+      if (clusterSetupRetryId !== undefined) window.clearInterval(clusterSetupRetryId);
+      map.off("idle", refreshClusterRenderState);
+      map.off("idle", syncClusterHitTargets);
+      map.off("moveend", refreshClusterRenderState);
+      map.off("moveend", syncClusterHitTargets);
+      map.off("click", handleClusterClick);
+      locationClusterInteractiveLayerIds.forEach((layerId) => {
+        map.off("mouseenter", layerId, handleClusterMouseEnter);
+        map.off("mouseleave", layerId, handleClusterMouseLeave);
+      });
+      Object.values(clusterHitMarkerRef.current).forEach((marker) => marker.remove());
+      clusterHitMarkerRef.current = {};
       if (map.getCanvas()) map.getCanvas().style.cursor = "";
     };
   }, [locationClusterData, mapReady, showOperationalPoints]);
@@ -947,6 +1089,8 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
         <span
           data-map-zoom={mapZoom.toFixed(2)}
           data-marker-density={markerDensityMode}
+          data-cluster-layer-ready={clusterLayerReady ? "true" : "false"}
+          data-rendered-cluster-count={renderedClusterCount}
           data-testid="marker-density-status"
           aria-live="polite"
           className="whitespace-nowrap rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600"
@@ -956,6 +1100,20 @@ export function VrpMap({ locations, allLocations = locations, orders, routes, sc
             : markerDensityMode === "clustered"
               ? `รวม marker ${storeLocationCount} จุดตามระดับซูม · กดวงกลมเพื่อขยาย`
               : "แสดง marker รายจุด"}
+        </span>
+        <span
+          data-cluster-click-state={clusterClickState}
+          data-testid="cluster-click-status"
+          aria-live="polite"
+          className="whitespace-nowrap rounded-lg bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-800"
+        >
+          {clusterClickState === "expanding"
+            ? "กำลังขยาย cluster"
+            : clusterClickState === "expanded"
+              ? "ขยาย cluster แล้ว"
+              : clusterClickState === "error"
+                ? "ขยาย cluster ไม่สำเร็จ · ลองซูมเข้า"
+                : "คลิกวงกลมหรือตัวเลข cluster เพื่อขยาย"}
         </span>
         <span
           data-testid="map-context-status"
