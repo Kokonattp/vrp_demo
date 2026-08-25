@@ -42,4 +42,6 @@ Audit mode: sequential fresh-context `self-audit`; no independent Luna Audit run
 ## Release notes
 
 - Deployment targets are separate: frontend Vercel project `vrp-demo`; backend Hugging Face Space `nattp/vrp-demo-api` through the `hf` remote. Deployment evidence must be recorded separately from this local E2E.
-- Provider traffic-aware routing, authenticated owner flows, native-device behavior, production regression, and 3D building data remain separate gates.
+- Production frontend regression smoke: PASS after Vercel deployment; page and `/api/health` returned HTTP 200, desktop/mobile count-label click reached the expanded state, and the browser console was clean.
+- Backend production health: BLOCKED — the pushed HF subtree has a working Git remote but the documented Space health URL returns HTTP 404; owner recovery/confirmation is required before claiming backend production readiness.
+- Provider traffic-aware routing is observed through the production frontend health response, but provider-authenticated, authenticated owner flows, native-device behavior, and 3D building data remain separate gates.

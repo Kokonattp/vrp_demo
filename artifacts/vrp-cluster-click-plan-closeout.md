@@ -29,6 +29,8 @@ Hardened the MapLibre cluster interaction so native circle/count clicks and acce
 - HTML hit targets are an intentional accessibility/overlay fallback, not a second clustering truth.
 - Provider, authenticated, device-native, production, and 3D gates remain separate.
 
-## Exact resume point
+## Final release state
 
-The cluster-click source/memory/evidence commit is already pushed. A root `.vercelignore` was added after the first Vercel upload attempt selected 173 MB and was stopped before promotion; commit this deployment-boundary change, push it, then deploy the frontend to the linked Vercel `vrp-demo` project and verify its URL/page separately from the backend. The backend subtree push succeeded, but `https://nattp-vrp-demo-api.hf.space/health` currently returns 404 and must remain reported as blocked until the owner restores or confirms the Space.
+The cluster-click source/memory/evidence commit and the Vercel upload-boundary commit are pushed to `origin/main`. Vercel production is `READY` at `https://vrp-demo.vercel.app`; page, `/api/health`, and desktop/mobile count-label smoke passed. The backend subtree push to the `hf` remote succeeded, but `https://nattp-vrp-demo-api.hf.space/health` returns HTTP 404, so backend production health remains blocked pending owner recovery/confirmation of the Space.
+
+Status: `PLAN_PAUSED` — frontend release verified; backend runtime reachability is not verified.
