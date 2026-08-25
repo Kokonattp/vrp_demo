@@ -60,3 +60,10 @@ The cluster circle and count-label click paths are candidate-bound E2E verified,
 ## Rollback
 
 Revert the release commit. If backend deployment has been updated, redeploy the previous backend subtree revision; do not reset or delete unrelated working-tree files.
+
+## Scope expansion: Vercel upload boundary
+
+- Old scope: deploy the linked Vercel project from the repository root using the existing project link.
+- New scope: add root `.vercelignore` so the deployment upload excludes repository history, local deployment metadata, backend/data/artifacts, and generated frontend dependencies/build output.
+- Why: the first root deploy attempt selected a 173 MB upload because the repository contains local evidence and generated files; it was stopped before promotion.
+- Impact/risk: deployment input is narrower and does not change application source; the ignored paths remain in the working tree and are not staged by this task. Rollback is to remove `.vercelignore` and use the prior deployment boundary.

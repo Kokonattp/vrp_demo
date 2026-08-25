@@ -1,0 +1,8 @@
+.git/
+.vercel/
+backend/
+data/
+artifacts/
+frontend/.next/
+frontend/node_modules/
+frontend/.vercel/

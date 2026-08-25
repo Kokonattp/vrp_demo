@@ -31,4 +31,4 @@ Hardened the MapLibre cluster interaction so native circle/count clicks and acce
 
 ## Exact resume point
 
-Stage only the approved VRP source/memory/evidence paths, reconcile the staged diff, commit and push `origin/main`, deploy the backend to the documented Hugging Face Space and frontend to the linked Vercel `vrp-demo` project, then verify each deployment URL/health separately.
+The cluster-click source/memory/evidence commit is already pushed. A root `.vercelignore` was added after the first Vercel upload attempt selected 173 MB and was stopped before promotion; commit this deployment-boundary change, push it, then deploy the frontend to the linked Vercel `vrp-demo` project and verify its URL/page separately from the backend. The backend subtree push succeeded, but `https://nattp-vrp-demo-api.hf.space/health` currently returns 404 and must remain reported as blocked until the owner restores or confirms the Space.
