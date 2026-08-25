@@ -45,6 +45,7 @@ import type {
   Order,
   RoutePlan,
   RouteStop,
+  RouteSource,
   RoutingHealth,
   ScenarioResult,
   Vehicle
@@ -148,6 +149,29 @@ function locationTypeLabel(type: LocationPoint["type"]) {
 
 function priorityLabel(priority: Order["priority"]) {
   return priority === "high" ? "ด่วน" : "ปกติ";
+}
+
+function routeSourceLabel(source: RouteSource | undefined) {
+  if (source === "google") return "ถนนจริงจาก Google";
+  if (source === "mapbox") return "ถนนจริงจาก Mapbox";
+  if (source === "osrm") return "ถนนจริงจาก OSRM";
+  if (source === "simulated") return "เส้นจำลองจากพิกัด";
+  return "ยังไม่ทราบแหล่งข้อมูล";
+}
+
+function matrixSourceLabel(source: RouteSource | undefined) {
+  if (source === "google") return "ตารางระยะทางจาก Google";
+  if (source === "mapbox") return "ตารางระยะทางจาก Mapbox";
+  if (source === "osrm") return "ตารางระยะทางจาก OSRM";
+  if (source === "simulated") return "ตารางระยะทางจำลอง";
+  return "ยังไม่ทราบแหล่งข้อมูลระยะทาง";
+}
+
+function routeTruthLabel(route: RoutePlan) {
+  const geometry = routeSourceLabel(route.geometrySource);
+  const matrix = matrixSourceLabel(route.matrixSource);
+  const traffic = route.trafficAware ? "ใช้จราจรตามเวลา" : "ไม่ใช้จราจรสด";
+  return `เส้นทาง: ${geometry} · ตารางระยะทาง: ${matrix} · ${traffic}`;
 }
 
 function timeToMinutes(value: string) {
@@ -346,13 +370,67 @@ function replaceRouteInScenario(
   return mergeRoutesIntoScenario(scenario, routes, costModel, summaryPrefix, status);
 }
 
+const localWeekdayTokens = [
+  ["sun", "อาทิตย์", "อา"],
+  ["mon", "จันทร์"],
+  ["tue", "อังคาร"],
+  ["wed", "พุธ"],
+  ["thu", "พฤหัสบดี", "พฤหัส"],
+  ["fri", "ศุกร์"],
+  ["sat", "เสาร์"]
+];
+
+function localPreferredDayMatches(location: LocationPoint | undefined, planningDate: string) {
+  if (!location?.preferredDays?.length) return true;
+  const date = new Date(`${planningDate}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return true;
+  const tokens = new Set(localWeekdayTokens[date.getDay()]);
+  return location.preferredDays.some((value) => tokens.has(value.trim().toLowerCase()));
+}
+
+function localVehicleCanServeOrder(vehicle: Vehicle, order: Order, location: LocationPoint | undefined, planningDate: string) {
+  if (!location || vehicle.maxStops < 1 || order.weightKg > vehicle.capacityKg || order.cbm > vehicle.capacityCbm) return false;
+  if (!localPreferredDayMatches(location, planningDate)) return false;
+  const zone = location.zoneHint?.trim().toLowerCase();
+  if (zone && vehicle.restrictedZones.some((value) => value.trim().toLowerCase() === zone)) return false;
+  const restriction = location.vehicleRestriction?.trim().toLowerCase();
+  if (!restriction) return true;
+  const vehicleTokens = [vehicle.id, vehicle.name].map((value) => value.toLowerCase());
+  if (vehicleTokens.some((token) => token && (restriction.includes(token) || token.includes(restriction)))) return true;
+  if (restriction.includes("รถเล็ก") || restriction.includes("small")) return vehicle.name.toLowerCase().includes("เล็ก") || vehicle.name.toLowerCase().includes("small");
+  if (restriction.includes("รถใหญ่") || restriction.includes("big")) return vehicle.name.toLowerCase().includes("ใหญ่") || vehicle.name.toLowerCase().includes("big");
+  return false;
+}
+
+function buildLocalUnassignedReasons(orderIds: string[], orders: Order[], vehicles: Vehicle[], locations: LocationPoint[], planningDate: string) {
+  const locationById = new Map(locations.map((location) => [location.id, location]));
+  return Object.fromEntries(
+    orderIds.map((orderId) => {
+      const order = orders.find((candidate) => candidate.id === orderId);
+      if (!order) return [orderId, "ไม่พบข้อมูลออเดอร์นี้ในชุดข้อมูลปัจจุบัน"];
+      const location = locationById.get(order.locationId);
+      if (!localPreferredDayMatches(location, planningDate)) {
+        return [orderId, `วันที่ ${planningDate} ไม่ตรงรอบส่งประจำของ ${location?.name ?? order.locationId}`];
+      }
+      const canFit = vehicles.some((vehicle) => localVehicleCanServeOrder(vehicle, order, location, planningDate));
+      return [
+        orderId,
+        canFit
+          ? "ยังจัดลง route ไม่ได้ภายใต้ capacity หรือจำนวนจุดของรถที่มี; ตรวจ Capacity check และข้อเตือน"
+          : "ไม่มี Vehicle ที่รับน้ำหนัก, CBM และจำนวนจุดของออเดอร์นี้ได้"
+      ];
+    })
+  );
+}
+
 function buildLocalFallback(
   scenarioId: string,
   depotId: string,
   locations: LocationPoint[],
   vehicles: Vehicle[],
   orders: Order[],
-  costModel: CostModel
+  costModel: CostModel,
+  planningDate: string
 ): ScenarioResult {
   const locationById = new Map(locations.map((location) => [location.id, location]));
   const depot = locationById.get(depotId) ?? locations[0];
@@ -365,9 +443,11 @@ function buildLocalFallback(
   }));
 
   sortOrdersForAnchorClustering(orders, locations).forEach((order) => {
+    const location = locationById.get(order.locationId);
     const bucket = vehicleBuckets.find(
       (candidate) =>
         candidate.orders.length < candidate.vehicle.maxStops &&
+        localVehicleCanServeOrder(candidate.vehicle, order, location, planningDate) &&
         candidate.loadKg + order.weightKg <= candidate.vehicle.capacityKg &&
         candidate.loadCbm + order.cbm <= candidate.vehicle.capacityCbm
     );
@@ -469,11 +549,16 @@ function buildLocalFallback(
         overtimeCost: routeCost.overtimeCost,
         latePenalty: routeCost.latePenalty,
         totalCost: routeCost.totalCost,
-        geometry: stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }))
+        geometry: stops.map((stop) => ({ lat: stop.lat, lng: stop.lng })),
+        matrixSource: "simulated" as const,
+        geometrySource: "simulated" as const,
+        trafficAware: false,
+        fallbackReason: "เชื่อมต่อระบบคำนวณเส้นทางไม่ได้; เส้นนี้เป็นเส้นจำลองจากพิกัด",
+        computedAt: new Date().toISOString()
       };
     });
 
-  const fallbackWarnings = ["ใช้แผนประมาณการในเครื่อง เพราะยังติดต่อ backend OR-Tools ไม่สำเร็จ"];
+  const fallbackWarnings = ["ใช้แผนประมาณการในเครื่อง เพราะยังติดต่อระบบคำนวณหลักไม่สำเร็จ"];
   const costBreakdown = buildCostBreakdown(routes, unassignedOrders, costModel);
 
   return {
@@ -486,6 +571,7 @@ function buildLocalFallback(
     costBreakdown,
     summary: buildScenarioSummary("fallback", routes, unassignedOrders, fallbackWarnings, costBreakdown),
     unassignedOrders,
+    unassignedReasons: buildLocalUnassignedReasons(unassignedOrders, orders, vehicles, locations, planningDate),
     warnings: fallbackWarnings,
     routes
   };
@@ -753,6 +839,10 @@ function mergeScenarioResults(scenarioId: string, results: ScenarioResult[]): Sc
     }))
   );
   const unassignedOrders = results.flatMap((result) => result.unassignedOrders);
+  const unassignedReasons = results.reduce<Record<string, string>>((reasons, result) => {
+    Object.assign(reasons, result.unassignedReasons ?? {});
+    return reasons;
+  }, {});
   const warnings = results.flatMap((result) => result.warnings);
   const costBreakdown = results.reduce<Record<string, number>>((total, result) => {
     Object.entries(result.costBreakdown ?? {}).forEach(([key, value]) => {
@@ -773,6 +863,7 @@ function mergeScenarioResults(scenarioId: string, results: ScenarioResult[]): Sc
       ...results.flatMap((result) => result.summary.slice(0, 1))
     ],
     unassignedOrders,
+    unassignedReasons,
     warnings,
     routes
   };
@@ -1047,7 +1138,12 @@ function rebuildManualRoute(route: RoutePlan, stops: RouteStop[], orders: Order[
     loadCbm: Number(loadCbm.toFixed(1)),
     warnings,
     routeNotes: ["Manual sequence: ลำดับถูกปรับด้วย drag and drop; กด Optimize เพื่อคำนวณเส้นทางถนนจริงใหม่เมื่อ routing พร้อมใช้งาน"],
-    geometry: routeStopGeometry(nextStops)
+    geometry: routeStopGeometry(nextStops),
+    matrixSource: "simulated",
+    geometrySource: "simulated",
+    trafficAware: false,
+    fallbackReason: "กำลังแสดงลำดับแบบ local preview; ยังไม่ได้ reroute ด้วย provider",
+    computedAt: new Date().toISOString()
   };
 }
 
@@ -1293,6 +1389,30 @@ export default function Home() {
     () => result.routes.filter((route) => routeMatchesPlanFilter(route, vehicles, routePlanFilter)),
     [result.routes, routePlanFilter, vehicles]
   );
+  const mapLocations = useMemo(() => {
+    const scopedLocationIds = new Set<string>();
+    if (hasCalculatedRoute) {
+      filteredRoutes.forEach((route) => route.stops.forEach((stop) => scopedLocationIds.add(stop.locationId)));
+      if (!filteredRoutes.length && depot) scopedLocationIds.add(depot.id);
+    } else if (!hasCalculatedRoute && selectedCluster) {
+      selectedCluster.branchIds.forEach((branchId) => scopedLocationIds.add(branchId));
+      if (depot) scopedLocationIds.add(depot.id);
+    } else {
+      return locations;
+    }
+    return locations.filter((location) => scopedLocationIds.has(location.id));
+  }, [depot, filteredRoutes, hasCalculatedRoute, locations, selectedCluster]);
+  const mapScopeLabel = !hasCalculatedRoute
+    ? selectedCluster?.name ?? "ทุกสาขา"
+    : !filteredRoutes.length
+      ? "ไม่มี route ตรงกับตัวกรอง"
+    : routePlanFilter === "attention"
+      ? "ต้องดูแล"
+      : routePlanFilter === "late"
+        ? "Late"
+        : routePlanFilter === "heavy"
+          ? "Capacity สูง"
+          : "ทั้งหมด";
   const hasCityTrafficToken = Boolean(process.env.NEXT_PUBLIC_MAPBOX_TOKEN?.trim());
   const routePlanFilterOptions = useMemo(
     () =>
@@ -1501,9 +1621,9 @@ export default function Home() {
       return optimized;
     } catch {
       setOptimizerState("offline");
-      return buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders, payload.costModel);
+      return buildLocalFallback(payload.scenarioId, payload.depotId, payload.locations, payload.vehicles, payload.orders, payload.costModel, payload.planningDate ?? planningDate);
     }
-  }, []);
+  }, [planningDate]);
 
   const runOptimization = useCallback(async (options?: { keepPanel?: boolean; clusterId?: string }) => {
     if (!depot) return;
@@ -1531,6 +1651,7 @@ export default function Home() {
     const payload: OptimizeRequest = {
       scenarioId: cluster ? cluster.name : scenarioName || `scenario-${Date.now()}`,
       depotId: depot.id,
+      planningDate,
       locations: optimizedLocations,
       vehicles: plan?.selectedVehicles.length ? plan.selectedVehicles : vehicles,
       orders: optimizedOrders,
@@ -1556,7 +1677,7 @@ export default function Home() {
         setActivePanel("run");
       }
     }
-  }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, scenarioName, vehicles]);
+  }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, planningDate, scenarioName, vehicles]);
 
   const runAllClusters = useCallback(async () => {
     if (!depot) return;
@@ -1587,13 +1708,14 @@ export default function Home() {
         const optimizedBranchIds = new Set(optimizedOrders.map((order) => order.locationId));
         const clusterLocations = [depot, ...locations.filter((location) => location.type === "store" && optimizedBranchIds.has(location.id))];
         const optimizedRaw = await optimizePayload({
-            scenarioId: cluster.name,
-            depotId: depot.id,
-            locations: clusterLocations,
-            vehicles: plan.selectedVehicles.length ? plan.selectedVehicles : vehicles,
-            orders: optimizedOrders,
-            costModel
-          });
+          scenarioId: cluster.name,
+          depotId: depot.id,
+          planningDate,
+          locations: clusterLocations,
+          vehicles: plan.selectedVehicles.length ? plan.selectedVehicles : vehicles,
+          orders: optimizedOrders,
+          costModel
+        });
         const unassignedOrderIds = new Set(optimizedRaw.unassignedOrders);
         optimizedOrders.forEach((order) => {
           if (!unassignedOrderIds.has(order.id)) assignedOrderIds.add(order.id);
@@ -1613,7 +1735,7 @@ export default function Home() {
     } finally {
       setIsRunning(false);
     }
-  }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, scenarioName, vehicles]);
+  }, [clusters, costModel, dailyOrders, depot, locations, optimizeMode, optimizePayload, planningDate, scenarioName, vehicles]);
 
   const saveCurrentRoutePlan = () => {
     if (!hasCalculatedRoute || !result.routes.length) return;
@@ -1696,6 +1818,7 @@ export default function Home() {
   const rerouteManualRoute = useCallback(async (manualRoute: RoutePlan) => {
     const payload: ManualRouteRequest = {
       scenarioId: result.scenarioId,
+      planningDate,
       route: manualRoute,
       locations,
       vehicles,
@@ -1737,7 +1860,7 @@ export default function Home() {
         );
       });
     }
-  }, [costModel, dailyOrders, locations, result.scenarioId, vehicles]);
+  }, [costModel, dailyOrders, locations, planningDate, result.scenarioId, vehicles]);
 
   const reorderRouteStop = (routeId: string, draggedOrderId: string, targetOrderId: string) => {
     if (draggedOrderId === targetOrderId) return;
@@ -1755,7 +1878,13 @@ export default function Home() {
     const localPreviewRoute = rebuildManualRoute(route, [depotStart, ...nextDeliveryStops, depotEnd], dailyOrders);
     setManualRouteSnapshots((current) => (current[routeId] ? current : { ...current, [routeId]: route }));
     setResult((current) =>
-      replaceRouteInScenario(current, localPreviewRoute, costModel, "Manual sequence: stop order changed; rerouting with backend.", current.status)
+      replaceRouteInScenario(
+        current,
+        localPreviewRoute,
+        costModel,
+        "Manual sequence: stop order changed; rerouting with backend.",
+        current.status === "optimized" ? "fallback" : current.status
+      )
     );
     setHasCalculatedRoute(true);
     void rerouteManualRoute(localPreviewRoute);
@@ -1954,7 +2083,7 @@ export default function Home() {
 
   return (
     <>
-    <main className="app-shell h-screen overflow-hidden bg-[#F8FAFC]">
+    <main className="app-shell h-screen overflow-y-auto bg-[#F8FAFC] lg:overflow-hidden">
       {showGuide && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/30 p-4">
           <div className="w-full max-w-xl rounded-[14px] border border-slate-300 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.16)]">
@@ -2023,8 +2152,8 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="grid h-[calc(100vh-78px)] grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)_396px]">
-        <aside className="overflow-y-auto border-b border-border bg-[#F8FAFC] p-4 lg:border-b-0 lg:border-r">
+      <div className="grid min-h-[calc(100vh-78px)] h-auto grid-cols-1 overflow-visible lg:h-[calc(100vh-78px)] lg:grid-cols-[360px_minmax(0,1fr)_396px] lg:overflow-hidden">
+        <aside className="order-2 overflow-y-auto border-b border-border bg-[#F8FAFC] p-4 lg:order-none lg:border-b-0 lg:border-r">
           <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as typeof activePanel)}>
             <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_14px_34px_rgba(15,23,42,0.14)]">
               <div className="flex items-start justify-between gap-3">
@@ -2446,11 +2575,13 @@ export default function Home() {
           </Tabs>
         </aside>
 
-        <section className="relative min-h-0 overflow-hidden">
+        <section className="order-1 relative h-[42vh] min-h-[300px] overflow-hidden lg:order-none lg:h-auto lg:min-h-0">
           <VrpMap
-            locations={locations}
+            locations={mapLocations}
+            allLocations={locations}
             orders={dailyOrders}
-            routes={result.routes}
+            routes={filteredRoutes}
+            scopeLabel={mapScopeLabel}
             selectedLocationId={selectedLocationId}
             clusterColorByLocationId={clusterColorByLocationId}
             onLocationSelect={setSelectedLocationId}
@@ -2458,7 +2589,7 @@ export default function Home() {
           />
         </section>
 
-        <aside className="overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:border-l lg:border-t-0">
+        <aside className="order-3 overflow-y-auto border-t border-border bg-[#F8FAFC] p-4 lg:order-none lg:border-l lg:border-t-0">
           <div className="mb-4 rounded-[14px] border border-slate-300 bg-white p-3 shadow-[0_16px_40px_rgba(15,23,42,0.14)]">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -2575,9 +2706,20 @@ export default function Home() {
                     ))}
                   </div>
                 )}
+                {Object.entries(result.unassignedReasons ?? {}).length > 0 && (
+                  <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950">
+                    <p className="font-semibold">ทำไมบางออเดอร์ยังไม่ถูกจัด</p>
+                    {Object.entries(result.unassignedReasons ?? {}).slice(0, 8).map(([orderId, reason]) => (
+                      <p key={orderId}>
+                        <span className="font-semibold">{orderId}</span> · {reason}
+                      </p>
+                    ))}
+                    {Object.keys(result.unassignedReasons ?? {}).length > 8 && <p>ยังมีอีก {Object.keys(result.unassignedReasons ?? {}).length - 8} รายการ เลื่อนดูรายการออเดอร์ที่จัดไม่ได้เพิ่มเติมได้จากข้อมูลผลลัพธ์</p>}
+                  </div>
+                )}
                 {result.status !== "optimized" && (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
-                    ตอนนี้เป็น fallback/offline preview: เส้นบนแผนที่เป็นเส้นจำลองจากลำดับจุด ไม่ใช่ geometry ถนนจริงจาก routing provider
+                    ผลลัพธ์นี้เป็นแผนประมาณการจากโหมดสำรอง ควรตรวจสอบเส้นทางและข้อเตือนก่อนนำไปใช้งานจริง
                   </div>
                 )}
               </CardContent>
@@ -2666,6 +2808,10 @@ export default function Home() {
                     <RouteMetric label="เวลา" value={`${route.durationMinutes} นาที`} />
                     <RouteMetric label="น้ำหนัก" value={`${Math.round(route.loadKg)} กก.`} />
                     <RouteMetric label="ต้นทุน" value={formatCurrency(route.totalCost)} />
+                  </div>
+                  <div className={`rounded-xl border p-3 text-[11px] leading-relaxed ${route.geometrySource === "google" || route.geometrySource === "mapbox" || route.geometrySource === "osrm" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+                    <p className="font-semibold">{routeTruthLabel(route)}</p>
+                    {route.fallbackReason && <p className="mt-1">เหตุผล/ข้อจำกัด: {route.fallbackReason}</p>}
                   </div>
                   {(route.routeNotes ?? []).length > 0 && (
                     <div className="space-y-1 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-950">
@@ -2972,7 +3118,9 @@ function RoutingConfigStatus({
   hasCityTrafficToken: boolean;
 }) {
   const provider = health.routingProvider ?? (optimizerState === "offline" ? "offline" : "unknown");
+  const configuredProvider = health.configuredRoutingProvider ?? provider;
   const providerLabel = provider === "google" ? "Google Routes" : provider === "mapbox" ? "Mapbox Traffic" : provider === "osrm" ? "OSRM" : provider;
+  const configuredLabel = configuredProvider === "google" ? "Google Routes" : configuredProvider === "mapbox" ? "Mapbox Traffic" : configuredProvider;
   const routeTraffic = Boolean(health.trafficAware);
   const routeBadge: "warning" | "success" | "muted" = optimizerState === "offline" ? "warning" : routeTraffic ? "success" : "muted";
   return (
@@ -2984,7 +3132,7 @@ function RoutingConfigStatus({
           </div>
           <div className="min-w-0">
             <p className="text-sm font-semibold">Traffic / Config</p>
-            <p className="truncate text-xs text-muted-foreground">Route geometry uses backend provider: {providerLabel}</p>
+            <p className="truncate text-xs text-muted-foreground">Runtime ใช้ {providerLabel} · ตั้งค่าไว้ {configuredLabel}</p>
           </div>
         </div>
         <Badge variant={routeBadge}>{optimizerState === "offline" ? "Offline" : routeTraffic ? "Traffic ON" : "No traffic"}</Badge>
@@ -2994,6 +3142,7 @@ function RoutingConfigStatus({
         <RouteMetric label="OR-Tools" value={health.ortools ? "Ready" : "Fallback"} />
         <RouteMetric label="City traffic" value={hasCityTrafficToken ? "Tile layer" : "No token"} />
       </div>
+      {health.routingProfile && <p className="mt-2 text-[11px] text-muted-foreground">Profile: {health.routingProfile}</p>}
     </div>
   );
 }

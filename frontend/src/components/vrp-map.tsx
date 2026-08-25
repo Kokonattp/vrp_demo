@@ -20,11 +20,39 @@ const cityTrafficColors = {
   severe: "#7F1D1D"
 };
 const mapboxTrafficToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN?.trim() ?? "";
+const individualMarkerZoom = 13;
+const clusterMaxZoom = individualMarkerZoom - 1;
+const locationClusterSourceId = "location-clusters";
+const locationClusterLayerId = "location-cluster-circles";
+const locationClusterCountLayerId = "location-cluster-count";
+const locationUnclusteredLayerId = "location-unclustered";
+const locationAccessSourceId = "location-access-constraints";
+const locationAccessLayerId = "location-access-constraint-circles";
+
+type BasemapContext = "buildings" | "places" | "pois";
+
+function setBasemapContextVisibility(map: MapLibreMap, context: BasemapContext, visible: boolean) {
+  map.getStyle().layers?.forEach((layer) => {
+    const id = layer.id.toLowerCase();
+    const sourceLayer = "source-layer" in layer && typeof layer["source-layer"] === "string" ? layer["source-layer"].toLowerCase() : "";
+    const matches =
+      context === "buildings"
+        ? sourceLayer === "building" || id.includes("building")
+        : context === "places"
+          ? sourceLayer === "place" || id.startsWith("place_")
+          : sourceLayer === "poi" || id.startsWith("poi");
+    if (matches && map.getLayer(layer.id)) {
+      map.setLayoutProperty(layer.id, "visibility", visible ? "visible" : "none");
+    }
+  });
+}
 
 type VrpMapProps = {
   locations: LocationPoint[];
+  allLocations?: LocationPoint[];
   orders: Order[];
   routes: RoutePlan[];
+  scopeLabel?: string;
   selectedLocationId?: string;
   clusterColorByLocationId?: Record<string, string>;
   onLocationSelect?: (id: string) => void;
@@ -77,11 +105,35 @@ function trafficLevelForLeg(previous: RoutePlan["stops"][number], current: Route
 }
 
 function buildTrafficFeatures(routes: RoutePlan[]): GeoJSON.FeatureCollection<GeoJSON.LineString> {
+  const routeGeometryLegs = (route: RoutePlan) => {
+    const geometry = route.geometry?.length ? route.geometry : route.stops.map((stop) => ({ lat: stop.lat, lng: stop.lng }));
+    let cursor = 0;
+    return route.stops.slice(1).map((stop, index) => {
+      const previous = route.stops[index];
+      let targetIndex = cursor + 1;
+      let targetDistance = Number.POSITIVE_INFINITY;
+      for (let geometryIndex = cursor; geometryIndex < geometry.length; geometryIndex += 1) {
+        const distance = distanceKm(geometry[geometryIndex], stop);
+        if (distance < targetDistance) {
+          targetDistance = distance;
+          targetIndex = geometryIndex;
+        }
+      }
+      targetIndex = Math.max(cursor + 1, Math.min(targetIndex, geometry.length - 1));
+      const segment = geometry.slice(cursor, targetIndex + 1);
+      cursor = targetIndex;
+      return {
+        previous,
+        stop,
+        coordinates: segment.length >= 2 ? segment : [{ lat: previous.lat, lng: previous.lng }, { lat: stop.lat, lng: stop.lng }]
+      };
+    });
+  };
+
   return {
     type: "FeatureCollection",
     features: routes.flatMap((route) =>
-      route.stops.slice(1).map((stop, index) => {
-        const previous = route.stops[index];
+      routeGeometryLegs(route).map(({ previous, stop, coordinates }) => {
         const impact = trafficLevelForLeg(previous, stop);
         return {
           type: "Feature" as const,
@@ -91,14 +143,13 @@ function buildTrafficFeatures(routes: RoutePlan[]): GeoJSON.FeatureCollection<Ge
             label: impact.label,
             routeName: route.vehicleName,
             driveMinutes: Math.round(impact.driveMinutes),
-            speedKmh: Math.round(impact.kmh)
+            speedKmh: Math.round(impact.kmh),
+            geometrySource: route.geometrySource ?? "unknown",
+            approximate: route.geometrySource !== "google" && route.geometrySource !== "mapbox" && route.geometrySource !== "osrm"
           },
           geometry: {
             type: "LineString" as const,
-            coordinates: [
-              [previous.lng, previous.lat],
-              [stop.lng, stop.lat]
-            ]
+            coordinates: coordinates.map((point) => [point.lng, point.lat])
           }
         };
       })
@@ -106,15 +157,30 @@ function buildTrafficFeatures(routes: RoutePlan[]): GeoJSON.FeatureCollection<Ge
   };
 }
 
-export function VrpMap({ locations, orders, routes, selectedLocationId, clusterColorByLocationId = {}, onLocationSelect, onLocationMove }: VrpMapProps) {
+function fitMapToLocations(map: MapLibreMap, scopedLocations: LocationPoint[], duration = 600) {
+  if (!scopedLocations.length) return;
+  const first = scopedLocations[0];
+  const bounds = new maplibregl.LngLatBounds([first.lng, first.lat], [first.lng, first.lat]);
+  scopedLocations.forEach((location) => bounds.extend([location.lng, location.lat]));
+  map.fitBounds(bounds as LngLatBoundsLike, { padding: 72, duration, maxZoom: 13 });
+}
+
+export function VrpMap({ locations, allLocations = locations, orders, routes, scopeLabel = "active scope", selectedLocationId, clusterColorByLocationId = {}, onLocationSelect, onLocationMove }: VrpMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Record<string, maplibregl.Marker>>({});
   const lastAutoFitSignatureRef = useRef<string | undefined>(undefined);
   const lastFocusedLocationIdRef = useRef<string | undefined>(undefined);
   const [mapReady, setMapReady] = useState(false);
+  const [mapZoom, setMapZoom] = useState(11);
+  const [showBuildings, setShowBuildings] = useState(true);
+  const [showPlaces, setShowPlaces] = useState(true);
+  const [showPois, setShowPois] = useState(true);
+  const [showOperationalPoints, setShowOperationalPoints] = useState(true);
+  const [showAccessConstraints, setShowAccessConstraints] = useState(true);
   const [showTrafficImpact, setShowTrafficImpact] = useState(false);
   const [showCityTraffic, setShowCityTraffic] = useState(false);
+  const hasApproximateRoutes = routes.some((route) => route.geometrySource !== "google" && route.geometrySource !== "mapbox" && route.geometrySource !== "osrm");
 
   const locationBoundsSignature = useMemo(() => {
     return locations
@@ -210,6 +276,52 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     return summaryByLocation;
   }, [orders]);
 
+  const storeLocationCount = useMemo(() => locations.filter((location) => location.type === "store").length, [locations]);
+
+  const locationClusterData = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point>>(
+    () => ({
+      type: "FeatureCollection",
+      features: locations
+        .filter((location) => location.type === "store")
+        .map((location) => ({
+          type: "Feature" as const,
+          properties: {
+            id: location.id,
+            name: location.name,
+            color: routeStopByLocationId.get(location.id)?.color ?? clusterColorByLocationId[location.id] ?? storeMarkerColor
+          },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [location.lng, location.lat]
+          }
+        }))
+    }),
+    [clusterColorByLocationId, locations, routeStopByLocationId]
+  );
+
+  const accessConstraintData = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point>>(
+    () => ({
+      type: "FeatureCollection",
+      features: locations
+        .filter((location) => location.vehicleRestriction?.trim())
+        .map((location) => ({
+          type: "Feature" as const,
+          properties: {
+            id: location.id,
+            name: location.name,
+            restriction: location.vehicleRestriction
+          },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [location.lng, location.lat]
+          }
+        }))
+    }),
+    [locations]
+  );
+
+  const markerDensityMode = !showOperationalPoints ? "hidden" : storeLocationCount > 1 && mapZoom < individualMarkerZoom ? "clustered" : "individual";
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -222,14 +334,21 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
-    map.once("load", () => setMapReady(true));
+    const handleZoomEnd = () => setMapZoom(map.getZoom());
+    map.on("zoomend", handleZoomEnd);
+    map.once("load", () => {
+      setMapZoom(map.getZoom());
+      setMapReady(true);
+    });
 
     return () => {
+      map.off("zoomend", handleZoomEnd);
       Object.values(markerRef.current).forEach((marker) => marker.remove());
       markerRef.current = {};
       map.remove();
       mapRef.current = null;
       setMapReady(false);
+      setMapZoom(11);
     };
   }, []);
 
@@ -238,13 +357,30 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
     if (!map || !locations.length || !mapReady || !locationBoundsSignature) return;
     if (lastAutoFitSignatureRef.current === locationBoundsSignature) return;
 
-    const first = locations[0];
-    const bounds = new maplibregl.LngLatBounds([first.lng, first.lat], [first.lng, first.lat]);
-    locations.forEach((location) => bounds.extend([location.lng, location.lat]));
-
     lastAutoFitSignatureRef.current = locationBoundsSignature;
-    map.fitBounds(bounds as LngLatBoundsLike, { padding: 72, duration: 600, maxZoom: 13 });
+    fitMapToLocations(map, locations);
   }, [locationBoundsSignature, locations, mapReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const applyBasemapContextVisibility = () => {
+      setBasemapContextVisibility(map, "buildings", showBuildings);
+      setBasemapContextVisibility(map, "places", showPlaces);
+      setBasemapContextVisibility(map, "pois", showPois);
+    };
+
+    if (map.isStyleLoaded()) {
+      applyBasemapContextVisibility();
+    } else {
+      map.once("load", applyBasemapContextVisibility);
+    }
+
+    return () => {
+      map.off("load", applyBasemapContextVisibility);
+    };
+  }, [mapReady, showBuildings, showPlaces, showPois]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -268,7 +404,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
           ? "จุดเริ่มต้น / จุดพัก / จุดกลับรถ"
           : routeStop
             ? `ลำดับส่งที่ ${routeStop.sequence}`
-            : "จุดสาขาใน master data";
+            : "จุดสาขาในข้อมูลของโครงการ";
       const routeText = routeStop ? `<span><b>รถ</b>${escapeHtml(routeStop.routeName)}</span>` : "";
       const orderText = routeStop?.orderIds.length ? `<span><b>ออเดอร์</b>${escapeHtml(routeStop.orderIds.join(", "))}</span>` : "";
       const arrivalText = routeStop ? `<span><b>ถึงประมาณ</b>${minutesToTime(routeStop.arrivalMinutes)}</span>` : "";
@@ -277,6 +413,10 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
       const addressText = location.address?.trim()
         ? `<span><b>ที่อยู่</b>${escapeHtml(location.address)}</span>`
         : "<span><b>ที่อยู่</b>ยังไม่ได้ระบุ</span>";
+      const sourceText = "<span><b>แหล่งข้อมูล</b>ข้อมูลสาขาของโครงการ</span>";
+      const accessText = location.vehicleRestriction?.trim()
+        ? `<span><b>ข้อจำกัดรถ</b>${escapeHtml(location.vehicleRestriction)}</span>`
+        : "";
       const serviceDates = orderSummary ? Array.from(new Set(orderSummary.serviceDates.filter(Boolean))) : [];
       const timeWindows = orderSummary ? Array.from(new Set(orderSummary.timeWindows.filter(Boolean))) : [];
       const orderSummaryText = orderSummary
@@ -301,7 +441,9 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         `<header><div class="vrp-map-popup__title"><span class="vrp-map-popup__pin" style="background:${markerColor}"></span><strong>${escapeHtml(location.name)}</strong></div><span>${locationType} · ${sequenceText}</span><em>${statusChip}</em></header>`,
         `<section>`,
         `<span><b>รหัส</b>${escapeHtml(location.id)}</span>`,
+        sourceText,
         addressText,
+        accessText,
         `<span><b>พิกัด</b>${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}</span>`,
         `</section>`,
         orderSummary ? `<section>` : "",
@@ -331,6 +473,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         .join(" ");
       markerElement.style.backgroundColor = markerColor;
       markerElement.style.setProperty("--marker-color", markerColor);
+      const markerShouldShow = showOperationalPoints && (location.type === "depot" || mapZoom >= individualMarkerZoom || selectedLocationId === location.id);
+      markerElement.style.display = markerShouldShow ? "" : "none";
       markerElement.textContent = markerLabel;
       markerElement.setAttribute(
         "aria-label",
@@ -344,8 +488,10 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         existing.getElement().className = markerElement.className;
         existing.getElement().style.backgroundColor = markerColor;
         existing.getElement().style.setProperty("--marker-color", markerColor);
+        existing.getElement().style.display = markerElement.style.display;
         existing.getElement().textContent = markerElement.textContent;
         existing.getElement().setAttribute("aria-label", markerElement.getAttribute("aria-label") ?? location.name);
+        if (markerElement.style.display === "none") existing.getPopup()?.remove();
         existing.getElement().onclick = (event) => {
           event.stopPropagation();
           onLocationSelect?.(location.id);
@@ -372,7 +518,170 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
 
       markerRef.current[location.id] = marker;
     });
-  }, [clusterColorByLocationId, locations, mapReady, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId]);
+  }, [clusterColorByLocationId, locations, mapReady, mapZoom, onLocationMove, onLocationSelect, orderSummaryByLocationId, routeStopByLocationId, selectedLocationId, showOperationalPoints]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const renderLocationClusters = () => {
+      const source = map.getSource(locationClusterSourceId) as maplibregl.GeoJSONSource | undefined;
+      if (source) {
+        source.setData(locationClusterData);
+      } else {
+        map.addSource(locationClusterSourceId, {
+          type: "geojson",
+          data: locationClusterData,
+          cluster: true,
+          clusterMaxZoom,
+          clusterRadius: 46
+        });
+      }
+
+      if (!map.getLayer(locationClusterLayerId)) {
+        map.addLayer({
+          id: locationClusterLayerId,
+          type: "circle",
+          source: locationClusterSourceId,
+          filter: ["has", "point_count"],
+          paint: {
+            "circle-color": "#1B2E4B",
+            "circle-radius": ["step", ["get", "point_count"], 18, 10, 22, 25, 28],
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+            "circle-opacity": ["interpolate", ["linear"], ["zoom"], clusterMaxZoom, 0.96, individualMarkerZoom, 0]
+          }
+        });
+      }
+
+      if (!map.getLayer(locationClusterCountLayerId)) {
+        map.addLayer({
+          id: locationClusterCountLayerId,
+          type: "symbol",
+          source: locationClusterSourceId,
+          filter: ["has", "point_count"],
+          layout: {
+            "text-field": ["get", "point_count_abbreviated"],
+            "text-font": ["Open Sans Bold"],
+            "text-size": 12,
+            "text-allow-overlap": true
+          },
+          paint: {
+            "text-color": "#ffffff",
+            "text-opacity": ["interpolate", ["linear"], ["zoom"], clusterMaxZoom, 1, individualMarkerZoom, 0]
+          }
+        });
+      }
+
+      if (!map.getLayer(locationUnclusteredLayerId)) {
+        map.addLayer({
+          id: locationUnclusteredLayerId,
+          type: "circle",
+          source: locationClusterSourceId,
+          filter: ["!", ["has", "point_count"]],
+          paint: {
+            "circle-color": ["get", "color"],
+            "circle-radius": 6,
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 1.5,
+            "circle-opacity": ["interpolate", ["linear"], ["zoom"], clusterMaxZoom, 0.86, individualMarkerZoom, 0]
+          }
+        });
+      }
+
+      [locationClusterLayerId, locationClusterCountLayerId, locationUnclusteredLayerId].forEach((layerId) => {
+        if (map.getLayer(layerId)) {
+          map.setLayoutProperty(layerId, "visibility", showOperationalPoints ? "visible" : "none");
+        }
+      });
+    };
+
+    const handleClusterClick = async (event: maplibregl.MapMouseEvent) => {
+      const features = map.queryRenderedFeatures(event.point, { layers: [locationClusterLayerId] });
+      const feature = features[0];
+      const clusterId = feature?.properties?.cluster_id;
+      const source = map.getSource(locationClusterSourceId) as maplibregl.GeoJSONSource | undefined;
+      if (typeof clusterId !== "number" || !source || feature?.geometry.type !== "Point") return;
+
+      const expansionZoom = await source.getClusterExpansionZoom(clusterId);
+      const [lng, lat] = feature.geometry.coordinates;
+      map.easeTo({ center: [lng, lat], zoom: Math.min(expansionZoom, individualMarkerZoom + 1), duration: 500 });
+    };
+    const handleClusterMouseEnter = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    const handleClusterMouseLeave = () => {
+      map.getCanvas().style.cursor = "";
+    };
+
+    if (map.isStyleLoaded()) {
+      renderLocationClusters();
+      map.on("click", locationClusterLayerId, handleClusterClick);
+      map.on("mouseenter", locationClusterLayerId, handleClusterMouseEnter);
+      map.on("mouseleave", locationClusterLayerId, handleClusterMouseLeave);
+    } else {
+      map.once("load", renderLocationClusters);
+    }
+
+    return () => {
+      map.off("load", renderLocationClusters);
+      map.off("click", locationClusterLayerId, handleClusterClick);
+      map.off("mouseenter", locationClusterLayerId, handleClusterMouseEnter);
+      map.off("mouseleave", locationClusterLayerId, handleClusterMouseLeave);
+      if (map.getCanvas()) map.getCanvas().style.cursor = "";
+    };
+  }, [locationClusterData, mapReady, showOperationalPoints]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const renderAccessConstraints = () => {
+      const source = map.getSource(locationAccessSourceId) as maplibregl.GeoJSONSource | undefined;
+      if (source) {
+        source.setData(accessConstraintData);
+      } else {
+        map.addSource(locationAccessSourceId, { type: "geojson", data: accessConstraintData });
+      }
+      if (!map.getLayer(locationAccessLayerId)) {
+        map.addLayer({
+          id: locationAccessLayerId,
+          type: "circle",
+          source: locationAccessSourceId,
+          paint: {
+            "circle-color": "#D97706",
+            "circle-radius": 8,
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+            "circle-opacity": 0.95
+          }
+        });
+      }
+      map.setLayoutProperty(locationAccessLayerId, "visibility", showAccessConstraints && accessConstraintData.features.length ? "visible" : "none");
+    };
+    const handleAccessConstraintClick = (event: maplibregl.MapMouseEvent) => {
+      const feature = map.queryRenderedFeatures(event.point, { layers: [locationAccessLayerId] })[0];
+      if (!feature || feature.geometry.type !== "Point") return;
+      const restriction = escapeHtml(String(feature.properties?.restriction ?? "ยังไม่ได้ระบุรายละเอียด"));
+      const name = escapeHtml(String(feature.properties?.name ?? "จุดส่ง"));
+      new maplibregl.Popup({ offset: 12, closeButton: true })
+        .setLngLat(feature.geometry.coordinates as [number, number])
+        .setHTML(`<div class="vrp-map-popup"><header><strong>${name}</strong><em>ข้อจำกัดการเข้าถึง</em></header><section><span><b>ข้อจำกัดรถ</b>${restriction}</span></section></div>`)
+        .addTo(map);
+    };
+
+    if (map.isStyleLoaded()) {
+      renderAccessConstraints();
+      map.on("click", locationAccessLayerId, handleAccessConstraintClick);
+    } else {
+      map.once("load", renderAccessConstraints);
+    }
+
+    return () => {
+      map.off("load", renderAccessConstraints);
+      map.off("click", locationAccessLayerId, handleAccessConstraintClick);
+    };
+  }, [accessConstraintData, mapReady, showAccessConstraints]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -403,6 +712,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         const sourceId = `route-${route.vehicleId}`;
         const casingLayerId = `route-casing-${route.vehicleId}`;
         const layerId = `route-line-${route.vehicleId}`;
+        const isSimulatedGeometry = route.geometrySource !== "google" && route.geometrySource !== "mapbox" && route.geometrySource !== "osrm";
         const coordinates = route.geometry.map((point) => [point.lng, point.lat]);
         const geojson: GeoJSON.Feature<GeoJSON.LineString> = {
           type: "Feature",
@@ -416,6 +726,14 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
         const source = map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
         if (source) {
           source.setData(geojson);
+          if (map.getLayer(casingLayerId)) {
+            map.setPaintProperty(casingLayerId, "line-dasharray", isSimulatedGeometry ? [2, 1] : [1, 0]);
+            map.setPaintProperty(casingLayerId, "line-opacity", isSimulatedGeometry ? 0.08 : 0.14);
+          }
+          if (map.getLayer(layerId)) {
+            map.setPaintProperty(layerId, "line-dasharray", isSimulatedGeometry ? [2, 1] : [1, 0]);
+            map.setPaintProperty(layerId, "line-opacity", isSimulatedGeometry ? 0.62 : 0.85);
+          }
         } else {
           map.addSource(sourceId, { type: "geojson", data: geojson });
           map.addLayer({
@@ -425,7 +743,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
             paint: {
               "line-color": route.color || fallbackRouteLineColor,
               "line-width": 8,
-              "line-opacity": 0.14,
+              "line-opacity": isSimulatedGeometry ? 0.08 : 0.14,
+              "line-dasharray": isSimulatedGeometry ? [2, 1] : [1, 0],
               "line-blur": 6
             },
             layout: {
@@ -440,7 +759,8 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
             paint: {
               "line-color": route.color || fallbackRouteLineColor,
               "line-width": 4,
-              "line-opacity": 0.85
+              "line-opacity": isSimulatedGeometry ? 0.62 : 0.85,
+              "line-dasharray": isSimulatedGeometry ? [2, 1] : [1, 0]
             },
             layout: {
               "line-cap": "round",
@@ -622,7 +942,118 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
   return (
     <div className="relative h-full min-h-0 w-full overflow-hidden bg-muted">
       <div ref={containerRef} className="h-full min-h-0 w-full" />
-      <div className="pointer-events-auto absolute left-5 top-5 z-30 flex max-w-[calc(100%-6rem)] items-center gap-2 rounded-xl border border-slate-300 bg-white/95 p-2 shadow-[0_12px_28px_rgba(15,23,42,0.12)] backdrop-blur">
+      <div className="pointer-events-auto absolute left-5 top-5 z-30 flex max-w-[calc(100%-6rem)] flex-wrap items-center gap-2 rounded-xl border border-slate-300 bg-white/95 p-2 shadow-[0_12px_28px_rgba(15,23,42,0.12)] backdrop-blur">
+        <span className="px-2 text-[11px] font-semibold text-slate-500">ขอบเขต: {scopeLabel}</span>
+        <span
+          data-map-zoom={mapZoom.toFixed(2)}
+          data-marker-density={markerDensityMode}
+          data-testid="marker-density-status"
+          aria-live="polite"
+          className="whitespace-nowrap rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600"
+        >
+          {markerDensityMode === "hidden"
+            ? "ซ่อนจุดส่ง/คลัง"
+            : markerDensityMode === "clustered"
+              ? `รวม marker ${storeLocationCount} จุดตามระดับซูม · กดวงกลมเพื่อขยาย`
+              : "แสดง marker รายจุด"}
+        </span>
+        <span
+          data-testid="map-context-status"
+          title="อาคารและสถานที่เป็นข้อมูลประกอบแผนที่; จุดส่งและคลังมาจากข้อมูลสาขาของโครงการ"
+          className="whitespace-nowrap rounded-lg bg-[#F8FAFC] px-2 py-1 text-[11px] font-semibold text-slate-500"
+        >
+          บริบท: อาคาร {showBuildings ? "เปิด" : "ปิด"} · สถานที่ {showPlaces && showPois ? "เปิด" : "ปิด"} · จุดส่ง {showOperationalPoints ? "เปิด" : "ปิด"}
+        </span>
+        <span
+          data-testid="map-access-status"
+          className="whitespace-nowrap rounded-lg bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800"
+        >
+          {accessConstraintData.features.length ? `ข้อจำกัดรถ ${accessConstraintData.features.length} จุด` : "ยังไม่มีข้อมูลข้อจำกัดรถ"}
+        </span>
+        <button
+          type="button"
+          aria-pressed={showBuildings}
+          onClick={() => setShowBuildings((current) => !current)}
+          title="อาคารจาก basemap ไม่ใช่ข้อมูลทางเข้าอาคารที่ยืนยันแล้ว"
+          className={
+            showBuildings
+              ? "h-9 rounded-lg bg-primary px-3 text-[11px] font-bold text-primary-foreground"
+              : "h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary"
+          }
+        >
+          อาคาร
+        </button>
+        <button
+          type="button"
+          aria-pressed={showPlaces && showPois}
+          onClick={() => {
+            const next = !(showPlaces && showPois);
+            setShowPlaces(next);
+            setShowPois(next);
+          }}
+          title="ชื่อสถานที่และ POI จาก basemap"
+          className={
+            showPlaces && showPois
+              ? "h-9 rounded-lg bg-primary px-3 text-[11px] font-bold text-primary-foreground"
+              : "h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary"
+          }
+        >
+          สถานที่/POI
+        </button>
+        <button
+          type="button"
+          aria-pressed={showOperationalPoints}
+          onClick={() => setShowOperationalPoints((current) => !current)}
+          title="จุดส่งและคลังจากข้อมูลสาขาของโครงการ"
+          className={
+            showOperationalPoints
+              ? "h-9 rounded-lg bg-primary px-3 text-[11px] font-bold text-primary-foreground"
+              : "h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary"
+          }
+        >
+          จุดส่ง/คลัง
+        </button>
+        <button
+          type="button"
+          aria-pressed={showAccessConstraints}
+          disabled={!accessConstraintData.features.length}
+          onClick={() => setShowAccessConstraints((current) => !current)}
+          title={accessConstraintData.features.length ? "แสดงจุดที่มีข้อจำกัดรถจากข้อมูลสาขาของโครงการ" : "ชุดข้อมูลนี้ยังไม่มีข้อจำกัดรถที่ระบุไว้"}
+          className={
+            showAccessConstraints && accessConstraintData.features.length
+              ? "h-9 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white"
+              : "h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          }
+        >
+          ข้อจำกัดรถ
+        </button>
+        <button
+          type="button"
+          disabled={!locations.length}
+          onClick={() => {
+            if (mapRef.current) fitMapToLocations(mapRef.current, locations);
+          }}
+          className="h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          ซูมจุดในขอบเขต
+        </button>
+        <button
+          type="button"
+          disabled={!allLocations.length}
+          onClick={() => {
+            if (mapRef.current) fitMapToLocations(mapRef.current, allLocations);
+          }}
+          className="h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          ดูทุกจุด
+        </button>
+        <button
+          type="button"
+          onClick={() => mapRef.current?.easeTo({ center: [100.5018, 13.7563], zoom: 11, duration: 500 })}
+          className="h-9 rounded-lg border border-slate-200 bg-[#F8FAFC] px-3 text-[11px] font-bold text-primary hover:bg-secondary"
+        >
+          รีเซ็ตมุมมอง
+        </button>
         <button
           type="button"
           disabled={!routes.length}
@@ -633,7 +1064,7 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
               : "h-10 rounded-lg border border-slate-200 bg-[#F8FAFC] px-4 text-xs font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
           }
         >
-          Route
+          สีตาม route
         </button>
         <button
           type="button"
@@ -644,12 +1075,12 @@ export function VrpMap({ locations, orders, routes, selectedLocationId, clusterC
               ? "h-10 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground"
               : "h-10 rounded-lg border border-slate-200 bg-[#F8FAFC] px-4 text-xs font-bold text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
           }
-          title={mapboxTrafficToken ? "Show Mapbox city traffic" : "Set NEXT_PUBLIC_MAPBOX_TOKEN to enable city traffic"}
+          title={mapboxTrafficToken ? "แสดงสภาพจราจรในเมืองจาก Mapbox" : "ต้องตั้งค่า NEXT_PUBLIC_MAPBOX_TOKEN เพื่อเปิดสภาพจราจรในเมือง"}
         >
-          City
+          จราจรในเมือง
         </button>
         <span className="whitespace-nowrap px-2 text-[11px] font-semibold text-slate-500">
-          {showTrafficImpact || showCityTraffic ? "Traffic ON" : "Traffic OFF"}
+          {showTrafficImpact || showCityTraffic ? (showTrafficImpact && hasApproximateRoutes ? "ประมาณการจราจร" : "จราจรเปิด") : "จราจรปิด"}
         </span>
       </div>
     </div>

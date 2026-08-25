@@ -3,6 +3,8 @@ export type Coordinate = {
   lng: number;
 };
 
+export type RouteSource = "google" | "mapbox" | "osrm" | "simulated" | "unknown";
+
 export type LocationPoint = Coordinate & {
   id: string;
   name: string;
@@ -82,6 +84,11 @@ export type RoutePlan = {
   latePenalty: number;
   totalCost: number;
   geometry: Coordinate[];
+  matrixSource?: RouteSource;
+  geometrySource?: RouteSource;
+  trafficAware?: boolean;
+  fallbackReason?: string;
+  computedAt?: string;
 };
 
 export type ScenarioResult = {
@@ -96,6 +103,7 @@ export type ScenarioResult = {
   unassignedOrders: string[];
   warnings: string[];
   routes: RoutePlan[];
+  unassignedReasons?: Record<string, string>;
 };
 
 export type ClusterTemplate = {
@@ -113,6 +121,7 @@ export type ClusterTemplate = {
 export type OptimizeRequest = {
   scenarioId: string;
   depotId: string;
+  planningDate?: string;
   locations: LocationPoint[];
   vehicles: Vehicle[];
   orders: Order[];
@@ -121,6 +130,7 @@ export type OptimizeRequest = {
 
 export type ManualRouteRequest = {
   scenarioId: string;
+  planningDate?: string;
   route: RoutePlan;
   locations: LocationPoint[];
   vehicles: Vehicle[];
@@ -131,7 +141,10 @@ export type ManualRouteRequest = {
 export type RoutingHealth = {
   status: "ok" | "offline";
   routingProvider?: string;
+  configuredRoutingProvider?: string;
+  routingProfile?: string;
   routingApi?: boolean;
   trafficAware?: boolean;
   ortools?: boolean;
+  computedAt?: string;
 };

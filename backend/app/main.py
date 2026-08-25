@@ -2,6 +2,7 @@ import math
 import os
 import re
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -55,6 +56,43 @@ def default_studio_sync_file() -> Path:
 
 
 STUDIO_SYNC_FILE = Path(os.getenv("STUDIO_SYNC_FILE") or default_studio_sync_file())
+
+RouteSource = Literal["google", "mapbox", "osrm", "simulated", "unknown"]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fallback_reason_from_warning(warning: str | None) -> str | None:
+    if not warning:
+        return None
+    lowered = warning.lower()
+    if any(marker in lowered for marker in ("unavailable", "fallback", "failed", "without live traffic", "simulated")):
+        return warning
+    return None
+
+
+def combine_fallback_reasons(*reasons: str | None) -> str | None:
+    unique = list(dict.fromkeys(reason for reason in reasons if reason))
+    return " ".join(unique) if unique else None
+
+
+@dataclass(frozen=True)
+class MatrixResult:
+    distances: list[list[float]]
+    durations: list[list[int]]
+    warning: str | None
+    source: RouteSource
+    trafficAware: bool
+    fallbackReason: str | None
+
+
+@dataclass(frozen=True)
+class GeometryResult:
+    geometry: list["Coordinate"]
+    source: RouteSource
+    fallbackReason: str | None
 
 
 class Coordinate(BaseModel):
@@ -113,6 +151,7 @@ class CostModel(BaseModel):
 class OptimizeRequest(BaseModel):
     scenarioId: str
     depotId: str
+    planningDate: str | None = None
     locations: list[LocationPoint]
     vehicles: list[Vehicle]
     orders: list[Order]
@@ -150,10 +189,16 @@ class RoutePlan(BaseModel):
     latePenalty: float = 0
     totalCost: float = 0
     geometry: list[Coordinate]
+    matrixSource: RouteSource = "unknown"
+    geometrySource: RouteSource = "unknown"
+    trafficAware: bool = False
+    fallbackReason: str | None = None
+    computedAt: str = Field(default_factory=utc_now_iso)
 
 
 class ManualRouteRequest(BaseModel):
     scenarioId: str
+    planningDate: str | None = None
     route: RoutePlan
     locations: list[LocationPoint]
     vehicles: list[Vehicle]
@@ -179,6 +224,7 @@ class ScenarioResult(BaseModel):
     unassignedOrders: list[str]
     warnings: list[str]
     routes: list[RoutePlan]
+    unassignedReasons: dict[str, str] = Field(default_factory=dict)
 
 
 app = FastAPI(title="VRP Simulation Studio API", version="0.1.0")
@@ -201,9 +247,12 @@ def health():
     return {
         "status": "ok",
         "routingProvider": active_routing_provider(),
+        "configuredRoutingProvider": ROUTING_PROVIDER,
+        "routingProfile": MAPBOX_PROFILE if ROUTING_PROVIDER == "mapbox" else GOOGLE_ROUTING_PREFERENCE if ROUTING_PROVIDER == "google" else None,
         "routingApi": bool(OSRM_BASE_URL or GOOGLE_MAPS_API_KEY or MAPBOX_ACCESS_TOKEN),
         "trafficAware": active_routing_provider() in {"google", "mapbox"} and active_routing_profile_is_traffic_aware(),
         "ortools": pywrapcp is not None,
+        "computedAt": utc_now_iso(),
     }
 
 
@@ -251,6 +300,193 @@ def post_studio_sync(payload: StudioSyncPayload):
     return write_studio_sync(payload)
 
 
+THAI_WEEKDAYS = {
+    0: {"จันทร์", "mon", "monday"},
+    1: {"อังคาร", "tue", "tues", "tuesday"},
+    2: {"พุธ", "wed", "wednesday"},
+    3: {"พฤหัสบดี", "พฤหัส", "thu", "thur", "thurs", "thursday"},
+    4: {"ศุกร์", "fri", "friday"},
+    5: {"เสาร์", "sat", "saturday"},
+    6: {"อาทิตย์", "อา", "sun", "sunday"},
+}
+
+
+def preferred_day_matches(location: LocationPoint, planning_date: str | None) -> bool:
+    if not location.preferredDays or not planning_date:
+        return True
+    try:
+        weekday = datetime.fromisoformat(planning_date).weekday()
+    except ValueError:
+        return True
+    allowed = {value.strip().lower() for value in location.preferredDays if value.strip()}
+    return not allowed or bool(allowed.intersection(THAI_WEEKDAYS[weekday]))
+
+
+def vehicle_restriction_reason(vehicle: Vehicle, location: LocationPoint) -> str | None:
+    zone = (location.zoneHint or "").strip().lower()
+    restricted_zones = {value.strip().lower() for value in vehicle.restrictedZones if value.strip()}
+    if zone and zone in restricted_zones:
+        return f"{vehicle.name} ไม่รองรับ zone {location.zoneHint}"
+
+    restriction = (location.vehicleRestriction or "").strip().lower()
+    if not restriction:
+        return None
+
+    vehicle_tokens = {vehicle.id.lower(), vehicle.name.lower()}
+    if any(token and (token in restriction or restriction in token) for token in vehicle_tokens):
+        return None
+    if any(token in restriction for token in ("รถเล็ก", "small")):
+        return None if any(token in vehicle.name.lower() for token in ("เล็ก", "small")) else f"{vehicle.name} ไม่ใช่รถเล็กตามข้อจำกัดของ {location.name}"
+    if any(token in restriction for token in ("รถใหญ่", "big")):
+        return None if any(token in vehicle.name.lower() for token in ("ใหญ่", "big")) else f"{vehicle.name} ไม่ใช่รถใหญ่ตามข้อจำกัดของ {location.name}"
+    return f"ยังยืนยันไม่ได้ว่า {vehicle.name} รองรับข้อจำกัด {location.vehicleRestriction} ของ {location.name}"
+
+
+def vehicle_order_infeasibility_reason(vehicle: Vehicle, order: Order, location: LocationPoint) -> str | None:
+    restriction_reason = vehicle_restriction_reason(vehicle, location)
+    if restriction_reason:
+        return restriction_reason
+    if order.weightKg > vehicle.capacityKg:
+        return f"{vehicle.name} รับน้ำหนักได้ {vehicle.capacityKg:g} กก. แต่ต้องส่ง {order.weightKg:g} กก."
+    if order.cbm > vehicle.capacityCbm:
+        return f"{vehicle.name} รับได้ {vehicle.capacityCbm:g} CBM แต่ต้องส่ง {order.cbm:g} CBM"
+    if vehicle.maxStops < 1:
+        return f"{vehicle.name} ไม่มี capacity สำหรับจุดส่ง"
+    return None
+
+
+def order_infeasibility_reason(
+    order: Order,
+    request: OptimizeRequest,
+    location_by_id: dict[str, LocationPoint],
+) -> str | None:
+    location = location_by_id.get(order.locationId)
+    if not location:
+        return f"ไม่พบสาขา {order.locationId} ในข้อมูล locations"
+    if request.planningDate and order.serviceDate and order.serviceDate != request.planningDate:
+        return f"ออเดอร์อยู่วันที่ {order.serviceDate} แต่กำลังวางแผนวันที่ {request.planningDate}"
+    if not preferred_day_matches(location, request.planningDate):
+        return f"วันที่ {request.planningDate} ไม่ตรงรอบส่งประจำของ {location.name}"
+
+    vehicle_reasons: list[str] = []
+    for vehicle in request.vehicles:
+        vehicle_reason = vehicle_order_infeasibility_reason(vehicle, order, location)
+        if vehicle_reason:
+            vehicle_reasons.append(vehicle_reason)
+            continue
+        return None
+
+    if vehicle_reasons:
+        return "ไม่มี Vehicle ที่รองรับออเดอร์นี้: " + "; ".join(dict.fromkeys(vehicle_reasons))[:800]
+    return "ยังไม่มี Vehicle ที่พร้อมรับออเดอร์นี้"
+
+
+def validate_request_feasibility(
+    request: OptimizeRequest,
+) -> tuple[list[Order], dict[str, str], list[str], list[str]]:
+    location_by_id = {location.id: location for location in request.locations}
+    preflight_reasons: dict[str, str] = {}
+    warnings: list[str] = []
+    fatal_errors: list[str] = []
+
+    if request.depotId not in location_by_id:
+        fatal_errors.append(f"ไม่พบ depot {request.depotId} ในข้อมูล locations")
+    for vehicle in request.vehicles:
+        if vehicle.startLocationId not in location_by_id or vehicle.endLocationId not in location_by_id:
+            fatal_errors.append(f"{vehicle.name} มี start/end location ที่ไม่มีอยู่ในข้อมูล")
+        elif vehicle.startLocationId != request.depotId or vehicle.endLocationId != request.depotId:
+            fatal_errors.append(
+                f"{vehicle.name} ใช้ start/end location ต่างจาก depot หลัก; multi-depot ยังไม่เปิดใช้ใน workflow นี้"
+            )
+
+    valid_orders: list[Order] = []
+    for order in request.orders:
+        reason = order_infeasibility_reason(order, request, location_by_id)
+        if reason:
+            preflight_reasons[order.id] = reason
+        else:
+            valid_orders.append(order)
+
+    if preflight_reasons:
+        warnings.append(f"ตรวจข้อมูลก่อนคำนวณแล้วพบ {len(preflight_reasons)} ออเดอร์ที่จัดไม่ได้")
+    if fatal_errors:
+        warnings.extend(fatal_errors)
+    return valid_orders, preflight_reasons, warnings, fatal_errors
+
+
+def build_unassigned_reasons(
+    order_ids: list[str],
+    request: OptimizeRequest,
+    existing: dict[str, str] | None = None,
+) -> dict[str, str]:
+    reasons = dict(existing or {})
+    location_by_id = {location.id: location for location in request.locations}
+    for order in request.orders:
+        if order.id not in order_ids or order.id in reasons:
+            continue
+        reasons[order.id] = order_infeasibility_reason(request=request, order=order, location_by_id=location_by_id) or (
+            "ยังจัดลง route ไม่ได้ภายใต้ capacity, จำนวนจุด หรือช่วงเวลา; ตรวจ Capacity check และข้อเตือนของแผนนี้"
+        )
+    return {order_id: reasons.get(order_id, "ยังไม่มีเหตุผลที่บันทึกไว้") for order_id in order_ids}
+
+
+def build_infeasible_result(
+    request: OptimizeRequest,
+    order_ids: list[str],
+    reasons: dict[str, str],
+    warnings: list[str],
+) -> ScenarioResult:
+    cost = round(len(order_ids) * request.costModel.unassignedPenaltyPerOrder, 2)
+    summary = ["ยังคำนวณไม่ได้ เพราะต้องแก้ข้อมูลเงื่อนไขก่อนเริ่มจัด route"]
+    summary.extend(warnings[:3])
+    return ScenarioResult(
+        scenarioId=request.scenarioId,
+        status="infeasible",
+        objective=cost,
+        totalDistanceKm=0,
+        totalDurationMinutes=0,
+        totalCost=cost,
+        costBreakdown={
+            "fixedCost": 0,
+            "distanceCost": 0,
+            "timeCost": 0,
+            "overtimeCost": 0,
+            "latePenalty": 0,
+            "unassignedPenalty": cost,
+            "totalCost": cost,
+        },
+        summary=summary,
+        unassignedOrders=order_ids,
+        unassignedReasons=reasons,
+        warnings=warnings,
+        routes=[],
+    )
+
+
+def attach_preflight_result(
+    result: ScenarioResult,
+    original_request: OptimizeRequest,
+    preflight_reasons: dict[str, str],
+    preflight_warnings: list[str],
+) -> ScenarioResult:
+    unassigned = list(dict.fromkeys([*preflight_reasons.keys(), *result.unassignedOrders]))
+    reasons = build_unassigned_reasons(unassigned, original_request, preflight_reasons)
+    extra_penalty = len(set(preflight_reasons).difference(result.unassignedOrders)) * original_request.costModel.unassignedPenaltyPerOrder
+    cost_breakdown = dict(result.costBreakdown)
+    if extra_penalty:
+        cost_breakdown["unassignedPenalty"] = round(cost_breakdown.get("unassignedPenalty", 0) + extra_penalty, 2)
+        cost_breakdown["totalCost"] = round(cost_breakdown.get("totalCost", result.totalCost) + extra_penalty, 2)
+    warnings = list(dict.fromkeys([*preflight_warnings, *result.warnings]))
+    result.unassignedOrders = unassigned
+    result.unassignedReasons = reasons
+    result.warnings = warnings
+    result.costBreakdown = cost_breakdown
+    result.totalCost = cost_breakdown.get("totalCost", result.totalCost)
+    result.objective = result.totalCost
+    result.summary = build_run_summary(result.status, result.routes, unassigned, warnings, cost_breakdown)
+    return result
+
+
 @app.get("/kaitheathcheck")
 def leapcell_healthcheck():
     return {"status": "ok"}
@@ -269,26 +505,28 @@ def leapcell_startup_probe():
 @app.post("/api/optimize", response_model=ScenarioResult)
 async def optimize(request: OptimizeRequest):
     if not request.locations or not request.vehicles or not request.orders:
-        return ScenarioResult(
-            scenarioId=request.scenarioId,
-            status="infeasible",
-            objective=0,
-            totalDistanceKm=0,
-            totalDurationMinutes=0,
-            totalCost=round(len(request.orders) * request.costModel.unassignedPenaltyPerOrder, 2),
-            costBreakdown={
-                "fixedCost": 0,
-                "distanceCost": 0,
-                "timeCost": 0,
-                "overtimeCost": 0,
-                "latePenalty": 0,
-                "unassignedPenalty": round(len(request.orders) * request.costModel.unassignedPenaltyPerOrder, 2),
-            },
-            summary=["ยังคำนวณไม่ได้ เพราะต้องมีข้อมูลคลัง/สาขา รถ และออเดอร์ก่อนรัน VRP"],
-            unassignedOrders=[order.id for order in request.orders],
-            warnings=["Locations, vehicles, and orders are required."],
-            routes=[],
+        order_ids = [order.id for order in request.orders]
+        return build_infeasible_result(
+            request,
+            order_ids,
+            {order_id: "ต้องมีข้อมูลคลัง/สาขา รถ และออเดอร์ก่อนรัน VRP" for order_id in order_ids},
+            ["ต้องมีข้อมูลคลัง/สาขา รถ และออเดอร์ก่อนรัน VRP"],
         )
+
+    original_request = request
+    valid_orders, preflight_reasons, preflight_warnings, fatal_errors = validate_request_feasibility(request)
+    if fatal_errors:
+        order_ids = [order.id for order in request.orders]
+        reasons = {order_id: "; ".join(fatal_errors) for order_id in order_ids}
+        return build_infeasible_result(request, order_ids, reasons, preflight_warnings)
+    if not valid_orders:
+        return build_infeasible_result(
+            request,
+            list(preflight_reasons.keys()),
+            preflight_reasons,
+            preflight_warnings or ["ไม่เหลือออเดอร์ที่ผ่านการตรวจข้อมูลก่อนคำนวณ"],
+        )
+    request = request.model_copy(update={"orders": valid_orders})
 
     location_by_id = {location.id: location for location in request.locations}
     depot = location_by_id.get(request.depotId) or request.locations[0]
@@ -300,9 +538,13 @@ async def optimize(request: OptimizeRequest):
             nodes.append(location)
             node_orders.append(order)
 
-    distance_matrix, duration_matrix, routing_warning = await build_matrices(nodes, node_orders)
+    matrix_result = await build_matrices(nodes, node_orders)
     if pywrapcp is None:
-        return build_greedy_result(request, nodes, node_orders, distance_matrix, duration_matrix, routing_warning)
+        result = await build_greedy_result(request, nodes, node_orders, matrix_result)
+        return attach_preflight_result(result, original_request, preflight_reasons, preflight_warnings)
+
+    distance_matrix = matrix_result.distances
+    duration_matrix = matrix_result.durations
 
     manager = pywrapcp.RoutingIndexManager(len(nodes), len(request.vehicles), [0] * len(request.vehicles), [0] * len(request.vehicles))
     routing = pywrapcp.RoutingModel(manager)
@@ -321,12 +563,16 @@ async def optimize(request: OptimizeRequest):
 
     demands_kg = [0] + [int(order.weightKg) for order in request.orders if order.locationId in location_by_id]
     demands_cbm = [0] + [int(order.cbm * 100) for order in request.orders if order.locationId in location_by_id]
+    demands_stops = [0] + [1 for order in request.orders if order.locationId in location_by_id]
 
     def kg_callback(from_index: int) -> int:
         return demands_kg[manager.IndexToNode(from_index)]
 
     def cbm_callback(from_index: int) -> int:
         return demands_cbm[manager.IndexToNode(from_index)]
+
+    def stops_callback(from_index: int) -> int:
+        return demands_stops[manager.IndexToNode(from_index)]
 
     kg_index = routing.RegisterUnaryTransitCallback(kg_callback)
     cbm_index = routing.RegisterUnaryTransitCallback(cbm_callback)
@@ -343,6 +589,14 @@ async def optimize(request: OptimizeRequest):
         [int(vehicle.capacityCbm * 100) for vehicle in request.vehicles],
         True,
         "Cbm",
+    )
+    stops_index = routing.RegisterUnaryTransitCallback(stops_callback)
+    routing.AddDimensionWithVehicleCapacity(
+        stops_index,
+        0,
+        [max(0, vehicle.maxStops) for vehicle in request.vehicles],
+        True,
+        "Stops",
     )
 
     service_minutes = [0] + [order.serviceMinutes for order in request.orders if order.locationId in location_by_id]
@@ -372,6 +626,14 @@ async def optimize(request: OptimizeRequest):
         routing.AddVariableMinimizedByFinalizer(time_dimension.CumulVar(routing.End(vehicle_id)))
 
     for node_index, order in enumerate(node_orders[1:], start=1):
+        location = nodes[node_index]
+        allowed_vehicles = [
+            vehicle_index
+            for vehicle_index, vehicle in enumerate(request.vehicles)
+            if vehicle_order_infeasibility_reason(vehicle, order, location) is None
+        ]
+        if allowed_vehicles:
+            routing.SetAllowedVehiclesForIndex(allowed_vehicles, manager.NodeToIndex(node_index))
         priority_factor = 2.5 if order and order.priority == "high" else 1.0
         penalty = max(100_000, int(request.costModel.unassignedPenaltyPerOrder * priority_factor * 100))
         routing.AddDisjunction([manager.NodeToIndex(node_index)], penalty)
@@ -383,7 +645,8 @@ async def optimize(request: OptimizeRequest):
 
     solution = routing.SolveWithParameters(search_parameters)
     if not solution:
-        return build_greedy_result(request, nodes, node_orders, distance_matrix, duration_matrix, routing_warning)
+        result = await build_greedy_result(request, nodes, node_orders, matrix_result)
+        return attach_preflight_result(result, original_request, preflight_reasons, preflight_warnings)
 
     result = await build_solution_result(
         request,
@@ -394,9 +657,9 @@ async def optimize(request: OptimizeRequest):
         solution,
         distance_matrix,
         duration_matrix,
-        routing_warning,
+        matrix_result,
     )
-    return result
+    return attach_preflight_result(result, original_request, preflight_reasons, preflight_warnings)
 
 
 @app.post("/api/route/manual", response_model=RoutePlan)
@@ -437,7 +700,9 @@ async def reroute_manual_route(request: ManualRouteRequest):
     if len(route_locations) <= 2:
         return request.route
 
-    distance_matrix, duration_matrix, routing_warning = await build_matrices(route_locations, route_orders)
+    matrix_result = await build_matrices(route_locations, route_orders)
+    distance_matrix = matrix_result.distances
+    duration_matrix = matrix_result.durations
     elapsed = request.route.stops[0].arrivalMinutes or 8 * 60
     start_minutes = elapsed
     route_distance = 0.0
@@ -491,20 +756,22 @@ async def reroute_manual_route(request: ManualRouteRequest):
         if len(ordered_orders) > vehicle.maxStops:
             warnings.append(f"{vehicle.name} max stops exceeded")
 
-    if routing_warning:
-        warnings.append(routing_warning)
+    if matrix_result.warning:
+        warnings.append(matrix_result.warning)
 
     duration_minutes = max(0, int(round(elapsed - start_minutes)))
     late_stop_count = sum(1 for stop in stops for warning in stop.warnings if warning == "Time window")
     route_cost = calculate_route_cost(route_distance, duration_minutes, late_stop_count, request.costModel)
-    geometry = await build_route_geometry(route_locations)
-    provider = active_routing_provider()
+    geometry_result = await build_route_geometry(route_locations)
     route_notes = [
-        f"Manual sequence rerouted with {provider} using locked stop order.",
-        f"Traffic-aware: {'yes' if provider in {'google', 'mapbox'} and active_routing_profile_is_traffic_aware() else 'no'}",
+        f"สร้างเส้นทางใหม่ตามลำดับจุดที่ล็อกไว้ โดยใช้ข้อมูลเส้นทาง {geometry_result.source}",
+        f"จราจรตามเวลา: {'ใช้' if matrix_result.trafficAware else 'ไม่ใช้'}",
+        f"ข้อมูลระยะทาง: {matrix_result.source}; เส้นทางบนแผนที่: {geometry_result.source}",
     ]
-    if routing_warning:
-        route_notes.append(routing_warning)
+    if matrix_result.warning:
+        route_notes.append(matrix_result.warning)
+    if geometry_result.fallbackReason:
+        route_notes.append(geometry_result.fallbackReason)
 
     return RoutePlan(
         vehicleId=request.route.vehicleId,
@@ -523,26 +790,47 @@ async def reroute_manual_route(request: ManualRouteRequest):
         overtimeCost=route_cost["overtimeCost"],
         latePenalty=route_cost["latePenalty"],
         totalCost=route_cost["totalCost"],
-        geometry=geometry,
+        geometry=geometry_result.geometry,
+        matrixSource=matrix_result.source,
+        geometrySource=geometry_result.source,
+        trafficAware=matrix_result.trafficAware,
+        fallbackReason=combine_fallback_reasons(matrix_result.fallbackReason, geometry_result.fallbackReason),
+        computedAt=utc_now_iso(),
     )
 
 
 async def build_matrices(
     nodes: list[LocationPoint], node_orders: list[Order | None]
-) -> tuple[list[list[float]], list[list[int]], str | None]:
+) -> MatrixResult:
     if active_routing_provider() == "google":
         google_result = await build_google_traffic_matrices(nodes, node_orders)
         if google_result:
-            return google_result
+            return MatrixResult(
+                distances=google_result[0],
+                durations=google_result[1],
+                warning=google_result[2],
+                source="google",
+                trafficAware=True,
+                fallbackReason=fallback_reason_from_warning(google_result[2]),
+            )
         if not OSRM_BASE_URL:
-            return build_simulated_matrices(nodes, "Google traffic routing unavailable; simulated travel matrix used.")
+            simulated = build_simulated_matrices(nodes, "ใช้ตารางระยะทางจำลอง เพราะไม่สามารถใช้เส้นทางจราจรจาก Google ได้")
+            return MatrixResult(*simulated, source="simulated", trafficAware=False, fallbackReason=simulated[2])
 
     if active_routing_provider() == "mapbox":
         mapbox_result = await build_mapbox_traffic_matrices(nodes, node_orders)
         if mapbox_result:
-            return mapbox_result
+            return MatrixResult(
+                distances=mapbox_result[0],
+                durations=mapbox_result[1],
+                warning=mapbox_result[2],
+                source="mapbox",
+                trafficAware=active_routing_profile_is_traffic_aware(),
+                fallbackReason=fallback_reason_from_warning(mapbox_result[2]),
+            )
         if not OSRM_BASE_URL:
-            return build_simulated_matrices(nodes, "Mapbox traffic routing unavailable; simulated travel matrix used.")
+            simulated = build_simulated_matrices(nodes, "ใช้ตารางระยะทางจำลอง เพราะไม่สามารถใช้เส้นทางจราจรจาก Mapbox ได้")
+            return MatrixResult(*simulated, source="simulated", trafficAware=False, fallbackReason=simulated[2])
 
     if OSRM_BASE_URL:
         coordinates = ";".join(f"{node.lng},{node.lat}" for node in nodes)
@@ -556,12 +844,20 @@ async def build_matrices(
                 durations = [[max(1, round(cell / 60)) for cell in row] for row in payload["durations"]]
                 warning = None
                 if ROUTING_PROVIDER in {"google", "mapbox"}:
-                    warning = f"{ROUTING_PROVIDER.title()} traffic routing unavailable; OSRM road routing used without live traffic."
-                return distances, durations, warning
+                    warning = f"ไม่สามารถใช้จราจรตามเวลาจาก {ROUTING_PROVIDER.title()} ได้ จึงใช้ถนนจริงจาก OSRM โดยไม่มีข้อมูลจราจรสด"
+                return MatrixResult(
+                    distances=distances,
+                    durations=durations,
+                    warning=warning,
+                    source="osrm",
+                    trafficAware=False,
+                    fallbackReason=warning,
+                )
         except Exception:
             pass
 
-    return build_simulated_matrices(nodes, "Routing API unavailable; simulated travel matrix used.")
+    simulated = build_simulated_matrices(nodes, "ไม่สามารถเชื่อมต่อ Routing API ได้ จึงใช้ตารางระยะทางจำลอง")
+    return MatrixResult(*simulated, source="simulated", trafficAware=False, fallbackReason=simulated[2])
 
 
 async def build_google_traffic_matrices(
@@ -1076,11 +1372,12 @@ async def build_solution_result(
     solution,
     distance_matrix: list[list[float]],
     duration_matrix: list[list[int]],
-    routing_warning: str | None,
+    matrix_result: MatrixResult,
 ) -> ScenarioResult:
     time_dimension = routing.GetDimensionOrDie("Time")
     visited_nodes: set[int] = set()
     routes: list[RoutePlan] = []
+    computed_at = utc_now_iso()
 
     for vehicle_index, vehicle in enumerate(request.vehicles):
         index = routing.Start(vehicle_index)
@@ -1141,8 +1438,16 @@ async def build_solution_result(
         if len([stop for stop in stops if stop.orderId]) > vehicle.maxStops:
             warnings.append(f"{vehicle.name} max stops exceeded")
 
-        geometry = await build_route_geometry([nodes[node] for node in route_nodes])
+        geometry_result = await build_route_geometry([nodes[node] for node in route_nodes])
         route_notes = route_cluster_notes(route_nodes, nodes, node_orders, distance_matrix, duration_matrix)
+        route_notes.extend(
+            [
+                f"ข้อมูลระยะทาง: {matrix_result.source}; เส้นทางบนแผนที่: {geometry_result.source}",
+                f"จราจรตามเวลา: {'ใช้' if matrix_result.trafficAware else 'ไม่ใช้'}",
+            ]
+        )
+        if geometry_result.fallbackReason:
+            route_notes.append(geometry_result.fallbackReason)
         duration_minutes = route_duration + sum(stop.serviceMinutes for stop in stops)
         late_stop_count = sum(1 for stop in stops for warning in stop.warnings if warning == "Time window")
         route_cost = calculate_route_cost(route_distance, duration_minutes, late_stop_count, request.costModel)
@@ -1164,12 +1469,17 @@ async def build_solution_result(
                 overtimeCost=route_cost["overtimeCost"],
                 latePenalty=route_cost["latePenalty"],
                 totalCost=route_cost["totalCost"],
-                geometry=geometry,
+                geometry=geometry_result.geometry,
+                matrixSource=matrix_result.source,
+                geometrySource=geometry_result.source,
+                trafficAware=matrix_result.trafficAware,
+                fallbackReason=combine_fallback_reasons(matrix_result.fallbackReason, geometry_result.fallbackReason),
+                computedAt=computed_at,
             )
         )
 
     unassigned = [node_orders[index].id for index in range(1, len(nodes)) if index not in visited_nodes and node_orders[index]]
-    warnings = [routing_warning] if routing_warning else []
+    warnings = [matrix_result.warning] if matrix_result.warning else []
     cost_breakdown = scenario_cost_breakdown(routes, len(unassigned), request.costModel)
     return ScenarioResult(
         scenarioId=request.scenarioId,
@@ -1181,28 +1491,35 @@ async def build_solution_result(
         costBreakdown=cost_breakdown,
         summary=build_run_summary("optimized", routes, unassigned, warnings, cost_breakdown),
         unassignedOrders=unassigned,
+        unassignedReasons=build_unassigned_reasons(unassigned, request),
         warnings=warnings,
         routes=routes,
     )
 
 
-def build_greedy_result(
+async def build_greedy_result(
     request: OptimizeRequest,
     nodes: list[LocationPoint],
     node_orders: list[Order | None],
-    distance_matrix: list[list[float]],
-    duration_matrix: list[list[int]],
-    routing_warning: str | None,
+    matrix_result: MatrixResult,
 ) -> ScenarioResult:
+    distance_matrix = matrix_result.distances
+    duration_matrix = matrix_result.durations
     vehicle_loads = [{"orders": [], "kg": 0.0, "cbm": 0.0} for _ in request.vehicles]
     unassigned: list[str] = []
+    location_by_id = {location.id: location for location in request.locations}
     prioritized_orders = sort_orders_for_anchor_clustering(request.orders, request.locations)
     for order in prioritized_orders:
+        location = location_by_id.get(order.locationId)
+        if not location:
+            unassigned.append(order.id)
+            continue
         placed = False
         for index, vehicle in enumerate(request.vehicles):
             load = vehicle_loads[index]
             if (
-                len(load["orders"]) < vehicle.maxStops
+                vehicle_order_infeasibility_reason(vehicle, order, location) is None
+                and len(load["orders"]) < vehicle.maxStops
                 and load["kg"] + order.weightKg <= vehicle.capacityKg
                 and load["cbm"] + order.cbm <= vehicle.capacityCbm
             ):
@@ -1214,9 +1531,9 @@ def build_greedy_result(
         if not placed:
             unassigned.append(order.id)
 
-    location_by_id = {location.id: location for location in request.locations}
     depot = nodes[0]
     routes: list[RoutePlan] = []
+    computed_at = utc_now_iso()
     for vehicle_index, vehicle in enumerate(request.vehicles):
         bucket = vehicle_loads[vehicle_index]
         if not bucket["orders"]:
@@ -1262,6 +1579,7 @@ def build_greedy_result(
         duration_minutes = max(0, elapsed - 8 * 60)
         late_stop_count = sum(1 for stop in stops for warning in stop.warnings if warning == "Time window")
         route_cost = calculate_route_cost(route_distance, duration_minutes, late_stop_count, request.costModel)
+        geometry_result = await build_route_geometry(route_locations)
         routes.append(
             RoutePlan(
                 vehicleId=vehicle.id,
@@ -1273,18 +1591,39 @@ def build_greedy_result(
                 loadKg=round(load_kg, 1),
                 loadCbm=round(load_cbm, 1),
                 warnings=warnings,
-                routeNotes=greedy_route_notes(route_locations, bucket["orders"]),
+                routeNotes=[
+                    *greedy_route_notes(route_locations, bucket["orders"]),
+                    f"ข้อมูลระยะทาง: {matrix_result.source}; เส้นทางบนแผนที่: {geometry_result.source}",
+                    "ตัวคำนวณหลักไม่พร้อมหรือใช้โหมดสำรอง; แผนนี้เป็นประมาณการ ยังไม่ใช่ผลลัพธ์ที่ optimize เต็มรูปแบบ",
+                    *([geometry_result.fallbackReason] if geometry_result.fallbackReason else []),
+                ],
                 fixedCost=route_cost["fixedCost"],
                 distanceCost=route_cost["distanceCost"],
                 timeCost=route_cost["timeCost"],
                 overtimeCost=route_cost["overtimeCost"],
                 latePenalty=route_cost["latePenalty"],
                 totalCost=route_cost["totalCost"],
-                geometry=[Coordinate(lat=location.lat, lng=location.lng) for location in route_locations],
+                geometry=geometry_result.geometry,
+                matrixSource=matrix_result.source,
+                geometrySource=geometry_result.source,
+                trafficAware=matrix_result.trafficAware,
+                fallbackReason=combine_fallback_reasons(
+                    matrix_result.fallbackReason,
+                    "ตัวคำนวณหลักไม่พร้อมหรือใช้โหมดสำรอง; แผนนี้เป็นประมาณการ ยังไม่ใช่ผลลัพธ์ที่ optimize เต็มรูปแบบ",
+                    geometry_result.fallbackReason,
+                ),
+                computedAt=computed_at,
             )
         )
 
-    warnings = [routing_warning or "OR-Tools unavailable; greedy fallback used."]
+    warnings = list(
+        dict.fromkeys(
+            [
+                *([matrix_result.warning] if matrix_result.warning else []),
+                "ตัวคำนวณหลักไม่พร้อมหรือใช้โหมดสำรอง; ใช้แผนประมาณการแทน",
+            ]
+        )
+    )
     cost_breakdown = scenario_cost_breakdown(routes, len(unassigned), request.costModel)
     return ScenarioResult(
         scenarioId=request.scenarioId,
@@ -1296,6 +1635,7 @@ def build_greedy_result(
         costBreakdown=cost_breakdown,
         summary=build_run_summary("fallback", routes, unassigned, warnings, cost_breakdown),
         unassignedOrders=unassigned,
+        unassignedReasons=build_unassigned_reasons(unassigned, request),
         warnings=warnings,
         routes=routes,
     )
@@ -1354,16 +1694,21 @@ def greedy_route_notes(route_locations: list[LocationPoint], route_orders: list[
     return notes[:3]
 
 
-async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate]:
-    if active_routing_provider() == "google" and len(route_nodes) > 1:
+async def build_route_geometry(route_nodes: list[LocationPoint]) -> GeometryResult:
+    primary_provider = active_routing_provider()
+    fallback_reasons: list[str] = []
+
+    if primary_provider == "google" and len(route_nodes) > 1:
         google_geometry = await build_google_route_geometry(route_nodes)
         if google_geometry:
-            return google_geometry
+            return GeometryResult(geometry=google_geometry, source="google", fallbackReason=None)
+        fallback_reasons.append("ไม่สามารถดึงเส้นถนนจริงจาก Google ได้")
 
-    if active_routing_provider() == "mapbox" and len(route_nodes) > 1:
+    if primary_provider == "mapbox" and len(route_nodes) > 1:
         mapbox_geometry = await build_mapbox_route_geometry(route_nodes)
         if mapbox_geometry:
-            return mapbox_geometry
+            return GeometryResult(geometry=mapbox_geometry, source="mapbox", fallbackReason=None)
+        fallback_reasons.append("ไม่สามารถดึงเส้นถนนจริงจาก Mapbox ได้")
 
     if OSRM_BASE_URL and len(route_nodes) > 1:
         coordinates = ";".join(f"{node.lng},{node.lat}" for node in route_nodes)
@@ -1374,10 +1719,22 @@ async def build_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordin
                 response.raise_for_status()
                 payload = response.json()
                 line = payload["routes"][0]["geometry"]["coordinates"]
-                return [Coordinate(lat=lat, lng=lng) for lng, lat in line]
+                return GeometryResult(
+                    geometry=[Coordinate(lat=lat, lng=lng) for lng, lat in line],
+                    source="osrm",
+                    fallbackReason=combine_fallback_reasons(*fallback_reasons),
+                )
         except Exception:
-            pass
-    return [Coordinate(lat=node.lat, lng=node.lng) for node in route_nodes]
+            fallback_reasons.append("ไม่สามารถดึงเส้นถนนจริงจาก OSRM ได้")
+
+    if primary_provider == "simulated":
+        fallback_reasons.append("ยังไม่ได้ตั้งค่า routing provider")
+    fallback_reasons.append("ใช้เส้นจำลองจากพิกัด ควรตรวจสอบ routing ก่อนใช้งานจริง")
+    return GeometryResult(
+        geometry=[Coordinate(lat=node.lat, lng=node.lng) for node in route_nodes],
+        source="simulated",
+        fallbackReason=combine_fallback_reasons(*fallback_reasons),
+    )
 
 
 async def build_mapbox_route_geometry(route_nodes: list[LocationPoint]) -> list[Coordinate] | None:
